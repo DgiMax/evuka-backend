@@ -1,0 +1,17 @@
+# This variable holds the base URL of your Django server.
+@baseUrl = http://127.0.0.1:8000
+
+###
+# @name loginRequest
+POST {{baseUrl}}/users/login/
+Content-Type: application/json
+
+{
+  "username": "james",
+  "password": "123"
+}
+
+
+###
+GET {{baseUrl}}/users/me/
+Content-Type: application/json

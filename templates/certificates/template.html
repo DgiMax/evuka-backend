@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Certificate of Completion</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Roboto:wght@400&display=swap');
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .certificate-container {
+            width: 800px;
+            height: 565px;
+            border: 10px solid #1a237e; /* Dark blue border */
+            padding: 40px;
+            background-color: #ffffff;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
+            position: relative;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .header {
+            font-family: 'Playfair Display', serif;
+            font-size: 48px;
+            color: #0d47a1; /* A slightly lighter blue */
+            margin-bottom: 20px;
+        }
+
+        .presented-to {
+            font-size: 18px;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .recipient-name {
+            font-family: 'Playfair Display', serif;
+            font-size: 40px;
+            font-weight: 700;
+            color: #000000;
+            border-bottom: 2px solid #1a237e;
+            display: inline-block;
+            padding-bottom: 5px;
+            margin-bottom: 20px;
+        }
+
+        .course-description {
+            font-size: 18px;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .course-title {
+            font-size: 28px;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: auto;
+            width: 100%;
+        }
+
+        .signature-block, .date-block {
+            width: 45%;
+            text-align: center;
+        }
+        
+        .signature-line {
+            border-top: 1px solid #555;
+            padding-top: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .verification-id {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            font-size: 10px;
+            color: #999;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="certificate-container">
+        <div class="header">
+            Certificate of Completion
+        </div>
+
+        <div class="presented-to">
+            This certificate is proudly presented to
+        </div>
+
+        <div class="recipient-name">
+            {{ certificate.user.get_full_name|default:certificate.user.username }}
+        </div>
+
+        <div class="course-description">
+            For successfully completing the course
+        </div>
+
+        <div class="course-title">
+            "{{ certificate.course.title }}"
+        </div>
+
+        <div class="footer">
+            <div class="date-block">
+                <div class="signature-line">
+                    {{ certificate.issue_date|date:"F d, Y" }}
+                </div>
+                <div>Date Issued</div>
+            </div>
+            <div class="signature-block">
+                <div class="signature-line">
+                    Lead Instructor
+                </div>
+                <div>Signature</div>
+            </div>
+        </div>
+        
+        <div class="verification-id">
+            Certificate ID: {{ certificate.certificate_uid }}
+        </div>
+    </div>
+</body>
+</html>

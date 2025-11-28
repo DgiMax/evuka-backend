@@ -1,0 +1,28 @@
+# --- Variables ---
+# Base URL for your local Django API
+@baseUrl = http://127.0.0.1:8080
+
+# The slug of an event you want to view.
+# Make sure an event with this slug exists in your database.
+@eventSlug = full-stack-hackathon
+
+
+#############################################################
+###                 Read-Only Event APIs                  ###
+#############################################################
+
+###
+# @name List All Upcoming Events
+# Description: Gets a list of all non-past events.
+GET {{baseUrl}}/events/
+
+###
+# @name List Events with Filters
+# Description: Applies query parameters to filter the event list.
+# Example: Find free, online events in the 'web-development' category.
+GET {{baseUrl}}/events/?price=free&category=web-development&type=online
+
+###
+# @name Retrieve a Single Event
+# Description: Gets the full details for one event by its slug.
+GET http://127.0.0.1:8080/events/{{eventSlug}}/

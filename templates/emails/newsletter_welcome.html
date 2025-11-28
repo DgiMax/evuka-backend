@@ -1,0 +1,15 @@
+{% extends "emails/base_email.html" %}
+
+{% block content %}
+<p>Hi there!</p>
+<p>You are officially in the loop! 🎉</p>
+<p>Thank you for subscribing to the e-vuka newsletter. You'll be the first to know about new courses, live events, and platform updates.</p>
+<p>We promise not to spam you, just good vibes and great learning materials.</p>
+<p>Best regards,<br>The e-vuka Team</p>
+
+<hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+<p style="font-size: 12px; color: #999;">
+    Did you sign up by mistake? 
+    <a href="{{ unsubscribe_url }}" style="color: #999; text-decoration: underline;">Unsubscribe here</a>.
+</p>
+{% endblock %}

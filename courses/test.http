@@ -1,0 +1,69 @@
+###
+# API Test File for D-Vuka E-Learning Platform
+#
+# INSTRUCTIONS:
+# 1. Install the "REST Client" extension in VS Code.
+# 2. Update the `host`, `course_slug`, and `authToken` variables below.
+# 3. For the `authToken`, you'll need to get a token by logging in.
+# 4. Click the "Send Request" text that appears above each request.
+###
+
+# --- Variables ---
+@host = http://127.0.0.1:8080
+@course_slug = advanced-django-rest-framework
+@authToken = Bearer YOUR_JWT_ACCESS_TOKEN_HERE
+
+###########################################################
+### 1. PUBLIC ENDPOINTS (No Authentication Needed)
+###########################################################
+
+### (A) Get All Courses (Page 1)
+GET {{host}}/courses/
+
+---
+
+### (B) Filter Courses by Category
+GET {{host}}/courses/?category=backend-development
+
+---
+
+### (C) Filter Courses by Level and Price Range
+GET {{host}}/courses/?level=Advanced&min_price=40&max_price=100
+
+---
+
+### (D) Search Courses
+GET {{host}}/courses/?search=django
+
+---
+
+### (E) Get Course Details (Anonymous User)
+GET {{host}}/courses/advanced-swahili-storytelling-workshop/
+
+###########################################################
+### 2. AUTHENTICATED ENDPOINTS
+###########################################################
+
+### (F) Get Course Details (Authenticated User)
+GET {{host}}/courses/{{course_slug}}/
+Authorization: {{authToken}}
+
+---
+
+### (G) Access Learning Page (SUCCESS CASE)
+GET {{host}}/courses/{{course_slug}}/learn/
+Authorization: {{authToken}}
+
+---
+
+### (H) Access Learning Page (FAILURE CASE - Not Authenticated)
+GET {{host}}/courses/{{course_slug}}/learn/
+
+---
+
+### (I) Access Learning Page (FAILURE CASE - Not Enrolled)
+GET {{host}}/courses/{{course_slug}}/learn/
+Authorization: {{authToken}} # <-- Use a token from a NON-ENROLLED user here
+
+### (H) Access Learning Page (FAILURE CASE - Not Authenticated)
+GET {{host}}/filters/

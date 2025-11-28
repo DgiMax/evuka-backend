@@ -1,0 +1,377 @@
+from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from rest_framework import serializers
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from django.db.models import Sum, Case, When
+
+from courses.models import Lesson, LessonProgress, Course, Enrollment, Certificate
+from courses.serializers import CourseListSerializer
+from events.models import Event
+from live.models import LiveLesson
+from organizations.models import OrgMembership
+from revenue.models import Transaction, Payout, Wallet
+from users.models import CreatorProfile, Subject, StudentProfile, TutorPayoutMethod, NewsletterSubscriber
+
+User = get_user_model()
+signer = TimestampSigner()
+
+
+class RegisterSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=True)
+
+    class Meta:
+        model = User
+        fields = ("username", "email", "password")
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already registered.")
+        return value
+
+    def create(self, validated_data):
+        user = User(
+            username=validated_data["username"],
+            email=validated_data["email"],
+            is_active=False,
+            is_verified=False,
+        )
+        user.set_password(validated_data["password"])
+        user.save()
+        return user
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    token = serializers.CharField()
+
+    def validate(self, data):
+        token = data.get("token")
+        try:
+            email = signer.unsign(token, max_age=60 * 60 * 24)
+            user = User.objects.get(email=email)
+        except (BadSignature, SignatureExpired, User.DoesNotExist):
+            raise serializers.ValidationError("Invalid or expired token.")
+        data["user"] = user
+        return data
+
+
+class UserDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "username",
+            "email",
+            "is_verified",
+            "is_tutor",
+            "is_student",
+        )
+
+
+class LoginSerializer(serializers.Serializer):
+    username = serializers.CharField(required=True)
+    password = serializers.CharField(write_only=True, required=True)
+
+    def validate(self, data):
+        username = data.get("username")
+        password = data.get("password")
+        user = authenticate(username=username, password=password)
+
+        if not user:
+            raise serializers.ValidationError("Invalid username or password.")
+        if not user.is_verified:
+            raise serializers.ValidationError("Account not verified.")
+
+        refresh = RefreshToken.for_user(user)
+        user_data = UserDetailSerializer(user).data
+
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": user_data,
+        }
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
+
+    def validate_password(self, value):
+        try:
+            validate_password(value)
+        except ValidationError as e:
+            raise serializers.ValidationError(e.messages)
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+
+    def validate_new_password(self, value):
+        try:
+            validate_password(value)
+        except ValidationError as e:
+            raise serializers.ValidationError(e.messages)
+        return value
+
+
+class DashboardEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Event
+        fields = ['title', 'slug', 'start_time', 'event_type', 'banner_image']
+
+
+class DashboardCourseSerializer(serializers.ModelSerializer):
+    tutor = serializers.CharField(source='creator.get_full_name', read_only=True)
+    progress = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = ['title', 'slug', 'thumbnail', 'tutor', 'progress']
+
+    def get_progress(self, obj):
+        progress_map = self.context.get('progress_map', {})
+        return progress_map.get(obj.id, 0)
+
+
+class ProfileCertificateSerializer(serializers.ModelSerializer):
+    course_title = serializers.CharField(source='course.title', read_only=True)
+
+    class Meta:
+        model = Certificate
+        fields = ['id', 'course_title', 'issue_date', 'certificate_uid']
+
+
+class ProfileOrgMembershipSerializer(serializers.ModelSerializer):
+    organization_name = serializers.CharField(source='organization.name', read_only=True)
+
+    class Meta:
+        model = OrgMembership
+        fields = ['id', 'organization_name', 'role']
+
+
+class StudentProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the StudentProfile.
+    Handles create, retrieve, and update.
+    """
+    user = serializers.ReadOnlyField(source='user.username')
+
+    class Meta:
+        model = StudentProfile
+        fields = [
+            'user',
+            'avatar',
+            'bio',
+            'preferences',
+            'created_at',
+        ]
+        read_only_fields = ['created_at']
+
+
+class StudentProfileReadSerializer(serializers.ModelSerializer):
+    """
+    Comprehensive serializer for retrieving all data needed by the profile page UI.
+    """
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+    phone_number = serializers.CharField(source='user.phone_number',
+                                         read_only=True)
+
+    memberships = ProfileOrgMembershipSerializer(many=True, source='user.memberships', read_only=True)
+    certificates = ProfileCertificateSerializer(many=True, source='user.certificates', read_only=True)
+
+    enrolled_courses_count = serializers.SerializerMethodField()
+    completed_courses_count = serializers.SerializerMethodField()
+    certificates_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentProfile
+        fields = [
+            'username', 'email', 'phone_number',
+            'avatar', 'bio',
+            'memberships', 'certificates',
+            'enrolled_courses_count', 'completed_courses_count', 'certificates_count',
+        ]
+
+    def get_enrolled_courses_count(self, obj):
+        """Counts actively enrolled courses."""
+        return Enrollment.objects.filter(user=obj.user, status='active').count()
+
+    def get_completed_courses_count(self, obj):
+        """Counts courses with completed enrollment status."""
+        return Enrollment.objects.filter(user=obj.user, status='completed').count()
+
+    def get_certificates_count(self, obj):
+        """Count certificates directly from the related manager."""
+        return obj.user.certificates.count()
+
+
+class SubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subject
+        fields = ['name', 'slug']
+
+
+class CreatorProfilePublicSerializer(serializers.ModelSerializer):
+    """
+    Public-facing serializer for a tutor's profile page.
+    Includes their bio, subjects, and list of published courses.
+    """
+    subjects = SubjectSerializer(many=True, read_only=True)
+    courses = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CreatorProfile
+        fields = (
+            'display_name', 'bio', 'profile_image', 'headline',
+            'intro_video', 'education', 'subjects', 'courses', 'is_verified'
+        )
+
+    def get_courses(self, obj):
+        courses_qs = Course.objects.filter(
+            creator_profile=obj,
+            organization__isnull=True,
+            is_published=True
+        ).order_by('-created_at')
+
+        return CourseListSerializer(courses_qs, many=True, context=self.context).data
+
+
+class CreatorProfileSerializer(serializers.ModelSerializer):
+    """
+    Serializer for the CreatorProfile.
+    Handles create (POST) and update (PATCH/PUT).
+    """
+    subjects = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        write_only=True,
+        required=False
+    )
+    subjects_list = SubjectSerializer(
+        many=True,
+        read_only=True,
+        source='subjects'
+    )
+    user = serializers.ReadOnlyField(source='user.username')
+    memberships = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CreatorProfile
+        fields = [
+            'user',
+            'display_name',
+            'headline',
+            'bio',
+            'profile_image',
+            'intro_video',
+            'education',
+            'subjects',
+            'subjects_list',
+            'is_verified',
+            'memberships',
+        ]
+        read_only_fields = ['is_verified']
+
+    def get_memberships(self, obj):
+        """
+        This is the custom method that populates the 'memberships' field.
+        'obj' is the CreatorProfile instance.
+        """
+        creator_roles = ['owner', 'admin', 'tutor']
+
+        queryset = obj.user.memberships.filter(
+            role__in=creator_roles,
+            is_active=True
+        ).select_related('organization')
+
+        return ProfileOrgMembershipSerializer(queryset, many=True).data
+
+    def _handle_subjects(self, profile_instance, subject_names_list):
+        profile_instance.subjects.clear()
+        for subject_name in subject_names_list:
+            name_cleaned = subject_name.strip()
+            if name_cleaned:
+                subject_obj, created = Subject.objects.get_or_create(
+                    name__iexact=name_cleaned,
+                    defaults={'name': name_cleaned}
+                )
+                profile_instance.subjects.add(subject_obj)
+
+    def create(self, validated_data):
+        subject_names = validated_data.pop('subjects', [])
+        profile = CreatorProfile.objects.create(**validated_data)
+        self._handle_subjects(profile, subject_names)
+        return profile
+
+    def update(self, instance, validated_data):
+        subject_names = validated_data.pop('subjects', None)
+        instance = super().update(instance, validated_data)
+
+        if subject_names is not None:
+            self._handle_subjects(instance, subject_names)
+
+        return instance
+
+class DashboardCourseMinimalSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for 'Best Performing Courses' list."""
+    student_count = serializers.IntegerField(read_only=True)
+    revenue = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Course
+        fields = ["id", "title", "slug", "thumbnail", "student_count", "revenue", "rating_avg"]
+
+class DashboardEventMinimalSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for 'Upcoming Events' list."""
+    start_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M")
+
+    class Meta:
+        model = Event
+        fields = ["id", "title", "slug", "start_time", "banner_image", "event_type"]
+
+class DashboardLiveLessonSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for 'Upcoming Classes' list."""
+    course_title = serializers.CharField(source="live_class.course.title", read_only=True)
+    start_time = serializers.TimeField(format="%H:%M")
+    date = serializers.DateField(format="%Y-%m-%d")
+
+    class Meta:
+        model = LiveLesson
+        fields = ["id", "title", "course_title", "date", "start_time", "jitsi_meeting_link"]
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transaction
+        fields = ["id", "tx_type", "amount", "description", "created_at"]
+
+class PayoutSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payout
+        fields = ["id", "amount", "status", "reference", "created_at", "processed_at"]
+
+class TutorPayoutMethodSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TutorPayoutMethod
+        fields = ["id", "method_type", "display_details", "is_active"]
+
+class WalletSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Wallet
+        fields = ["balance", "currency"]
+
+class WebSocketTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=500)
+
+
+class NewsletterSubscriberSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsletterSubscriber
+        fields = ['email', 'is_active', 'created_at']
+        read_only_fields = ['is_active', 'created_at']

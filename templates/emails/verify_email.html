@@ -1,0 +1,22 @@
+{% extends "emails/base_email.html" %}
+
+{% block content %}
+<p>Hi {{ user.username|default:"there" }},</p>
+<p>Welcome to <strong>e-vuka</strong>! We are thrilled to have you on board.</p>
+<p>We just need to verify your email address to complete your registration and get you access to all our courses and events.</p>
+<table border="0" cellpadding="0" cellspacing="0" class="btn btn-primary">
+    <tbody>
+        <tr>
+            <td align="left">
+                <table border="0" cellpadding="0" cellspacing="0">
+                    <tr>
+                        <td> <a href="{{ verification_url }}" target="_blank">Verify My Account</a> </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </tbody>
+</table>
+<p>If you didn't create an account with e-vuka, please ignore this email.</p>
+<p>Cheers,<br>The e-vuka Team</p>
+{% endblock %}
