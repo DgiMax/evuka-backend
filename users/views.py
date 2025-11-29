@@ -43,30 +43,54 @@ from users.serializers import WebSocketTokenSerializer
 User = get_user_model()
 signer = TimestampSigner()
 
+import logging
+logger = logging.getLogger(__name__)
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
     def perform_create(self, serializer):
-        user = serializer.save()
-        token = signer.sign(user.email)
-        verification_url = f"{settings.FRONTEND_URL}/verify-email/{token}/"
+        try:
+            logger.info("Starting user registration...")
+            print("DEBUG: Starting user registration...")
 
-        html_message = render_to_string('emails/verify_email.html', {
-            'user': user,
-            'verification_url': verification_url
-        })
-        plain_message = strip_tags(html_message)
+            # Save user
+            user = serializer.save()
+            logger.info(f"User saved: {user}")
+            print(f"DEBUG: User saved: {user}")
 
-        send_mail(
-            subject="Verify your account",
-            message=plain_message,
-            html_message=html_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=True
-        )
+            # Generate token and verification URL
+            token = signer.sign(user.email)
+            verification_url = f"{settings.FRONTEND_URL}/verify-email/{token}/"
+            logger.info(f"Verification URL: {verification_url}")
+            print(f"DEBUG: Verification URL: {verification_url}")
+
+            # Render email
+            html_message = render_to_string('emails/verify_email.html', {
+                'user': user,
+                'verification_url': verification_url
+            })
+            plain_message = strip_tags(html_message)
+            logger.info("Email rendered successfully")
+            print("DEBUG: Email rendered successfully")
+
+            # Send email
+            send_mail(
+                subject="Verify your account",
+                message=plain_message,
+                html_message=html_message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False  # Change to False to catch email errors
+            )
+            logger.info("Email sent successfully")
+            print("DEBUG: Email sent successfully")
+
+        except Exception as e:
+            logger.error(f"Registration failed: {e}", exc_info=True)
+            print(f"DEBUG: Registration failed: {e}")
+            raise e  # re-raise so DRF returns the error
 
 class VerifyEmailView(APIView):
     permission_classes = [permissions.AllowAny]

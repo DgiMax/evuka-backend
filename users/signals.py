@@ -1,8 +1,7 @@
-# users/signals.py
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
-from .models import StudentProfile  # <-- 1. Import the correct model
+from .models import StudentProfile
 
 User = get_user_model()
 
@@ -23,7 +22,6 @@ def delete_student_profile(sender, instance, **kwargs):
     When a User is deleted, also delete their StudentProfile.
     """
     try:
-        # 2. Use the correct related_name ('student_profile' or whatever you set)
-        instance.student_profile.delete()
+        instance.marketplace_learner.delete()
     except StudentProfile.DoesNotExist:
         pass
