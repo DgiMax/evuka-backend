@@ -20,7 +20,7 @@ urlpatterns = [
     path('revenue/', include('revenue.urls')),
     path('students/', include("students.urls")),
     path('live/', include("live.urls")),
-    path('community/api/', include('org_community.urls')),
+    path('community/', include('org_community.urls')),
     path("ai/", include("ai_assistant.urls")),
     path('notifications/', include('notifications.urls')),
     path(

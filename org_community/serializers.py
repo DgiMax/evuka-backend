@@ -1,30 +1,29 @@
 from rest_framework import serializers
-from django.db.models import Count, Q
 from .models import OrgJoinRequest, OrgInvitation
 from organizations.models import Organization, OrgMembership
-from organizations.serializers import OrgUserSerializer
-
-
-class OrgBrandingSerializer(serializers.Serializer):
-    """ Read-only serializer for nested branding JSON """
-    logo_url = serializers.URLField(read_only=True)
+# Import the helper serializers we just fixed in the main app
+from organizations.serializers import OrgUserSerializer, OrganizationSimpleSerializer
 
 
 class OrgDiscoverySerializer(serializers.ModelSerializer):
     """
     Serializer for the public organization discovery page.
-    Includes stats and user-specific status (member, pending).
+    Includes stats, logo, and user-specific status.
     """
-    branding = OrgBrandingSerializer(read_only=True)
     stats = serializers.SerializerMethodField()
     is_member = serializers.SerializerMethodField()
     has_pending_request = serializers.SerializerMethodField()
 
+    # Explicitly include the logo from the ImageField
+    logo = serializers.ImageField(read_only=True)
+
     class Meta:
         model = Organization
-        fields = ('id', 'name', 'slug', 'description', 'branding', 'stats', 'is_member', 'has_pending_request')
+        # Added 'logo' to fields, removed manual OrgBrandingSerializer
+        fields = ('id', 'name', 'slug', 'description', 'logo', 'branding', 'stats', 'is_member', 'has_pending_request')
 
     def get_stats(self, obj):
+        # Optimized count queries
         tutors = OrgMembership.objects.filter(organization=obj, role__in=['owner', 'admin', 'tutor'],
                                               is_active=True).count()
         students = OrgMembership.objects.filter(organization=obj, role='student', is_active=True).count()
@@ -91,33 +90,38 @@ class OrgJoinRequestCreateSerializer(serializers.ModelSerializer):
 class OrgJoinRequestSerializer(serializers.ModelSerializer):
     """
     Serializer for ADMINS to view incoming join requests.
-    Includes nested user details.
+    Includes nested user details AND Organization logo.
     """
     user = OrgUserSerializer(read_only=True)
+    # Added Organization info so the list displays the logo
+    organization = OrganizationSimpleSerializer(read_only=True)
 
     class Meta:
         model = OrgJoinRequest
-        fields = ['id', 'user', 'message', 'status', 'created_at']
+        fields = ['id', 'user', 'organization', 'message', 'status', 'created_at']
 
 
 class OrgInvitationSerializer(serializers.ModelSerializer):
     """
     Serializer for USERS to view their pending invitations.
-    Includes nested details of who invited them.
+    Includes nested details of who invited them + Organization Logo.
     """
-    organization = serializers.ReadOnlyField(source='organization.name')
+    # Use SimpleSerializer to get name + logo
+    organization = OrganizationSimpleSerializer(read_only=True)
     invited_by = OrgUserSerializer(read_only=True)
+    invited_user = OrgUserSerializer(read_only=True)
 
     class Meta:
         model = OrgInvitation
-        fields = ['id', 'organization', 'invited_by', 'role', 'status', 'created_at']
+        fields = ['id', 'organization', 'invited_by', 'invited_user', 'role', 'status', 'created_at']
 
 
 class UserJoinRequestSerializer(serializers.ModelSerializer):
     """
     Serializer for USERS to view their *own* sent join requests.
     """
-    organization = serializers.ReadOnlyField(source='organization.name')
+    # Use SimpleSerializer to get name + logo
+    organization = OrganizationSimpleSerializer(read_only=True)
 
     class Meta:
         model = OrgJoinRequest

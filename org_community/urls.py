@@ -5,7 +5,7 @@ from .views import (
     RequestToJoinView,
     OrgJoinRequestViewSet,
     UserInvitationsViewSet,
-    UserJoinRequestViewSet
+    UserJoinRequestViewSet, OrgSentInvitationsViewSet
 )
 
 router = DefaultRouter()
@@ -16,5 +16,6 @@ router.register(r'my-join-requests', UserJoinRequestViewSet, basename='my-join-r
 
 urlpatterns = [
     path('request-join/', RequestToJoinView.as_view(), name='org-request-join'),
+    path('sent-invitations/', OrgSentInvitationsViewSet.as_view({'get': 'list'}), name='org-invitations'),
     path('', include(router.urls)),
 ]

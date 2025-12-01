@@ -1,3 +1,4 @@
+import json
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -22,6 +23,7 @@ class OrgUserSerializer(serializers.ModelSerializer):
         model = User
         fields = ('id', 'username', 'email', 'full_name')
 
+
 class OrgMembershipSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source="organization.name", read_only=True)
     organization_slug = serializers.CharField(source="organization.slug", read_only=True)
@@ -38,6 +40,7 @@ class OrgCategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'created_at']
         read_only_fields = ['organization', 'created_at']
 
+
 class OrgLevelSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrgLevel
@@ -45,7 +48,46 @@ class OrgLevelSerializer(serializers.ModelSerializer):
         read_only_fields = ['organization', 'created_at']
 
 
+class OrganizationSimpleSerializer(serializers.ModelSerializer):
+    """
+    Used by OrgCommunity serializers to show the name + LOGO.
+    """
+
+    class Meta:
+        model = Organization
+        fields = ['id', 'name', 'slug', 'logo', 'org_type']
+
+
+class FormDataJSONField(serializers.JSONField):
+    """
+    Custom field that handles JSON data coming from FormData (which arrives as strings).
+    """
+
+    def to_internal_value(self, data):
+        # If data is already a dict (standard JSON request), use parent logic
+        if isinstance(data, dict):
+            return super().to_internal_value(data)
+
+        # If data is a string (FormData), try to parse it
+        if isinstance(data, str):
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                raise serializers.ValidationError("Invalid JSON format.")
+
+        return super().to_internal_value(data)
+
+
 class OrganizationDetailSerializer(serializers.ModelSerializer):
+    branding = FormDataJSONField(required=False)
+    policies = FormDataJSONField(required=False)
+
+    logo = serializers.ImageField(required=False, allow_null=True)
+
+    membership_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    membership_period = serializers.ChoiceField(choices=Organization.MEMBERSHIP_PERIODS, required=False)
+    membership_duration_value = serializers.IntegerField(required=False, allow_null=True)
+
     stats = serializers.SerializerMethodField()
     current_user_membership = serializers.SerializerMethodField()
 
@@ -53,70 +95,33 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
         model = Organization
         fields = [
             'id', 'name', 'slug', 'org_type', 'description',
+            'logo', 'approved',
             'branding', 'policies', 'created_at', 'stats',
-            'current_user_membership', 'membership_price', 'membership_period'
+            'current_user_membership',
+            'membership_price', 'membership_period', 'membership_duration_value'
         ]
-        read_only_fields = ['slug', 'approved', 'created_at', 'updated_at']
+        read_only_fields = ['slug', 'approved', 'created_at', 'updated_at', 'branding', 'policies']
 
     def get_stats(self, obj):
-        """Calculates key statistics for the organization."""
-        student_count = OrgMembership.objects.filter(
-            organization=obj,
-            role="student",
-            is_active=True
-        ).count()
-
-        tutor_admin_count = OrgMembership.objects.filter(
-            organization=obj,
-            role__in=["tutor", "admin", "owner"],
-            is_active=True
-        ).count()
-
-        course_count = Course.objects.filter(
-            organization=obj,
-            status='published'
-        ).count()
-
-        now = timezone.now()
-
-        try:
-            upcoming_events_count = Event.objects.filter(
-                course__organization=obj,
-                start_time__gte=now,
-                event_status__in=['approved', 'scheduled']
-            ).count()
-
-        except Exception:
-            upcoming_events_count = 0
-
         return {
-            "students": student_count,
-            "tutors": tutor_admin_count,
-            "courses": course_count,
-            "upcoming_events": upcoming_events_count
+            "students": OrgMembership.objects.filter(organization=obj, role="student", is_active=True).count(),
+            "tutors": OrgMembership.objects.filter(organization=obj, role__in=["tutor", "admin", "owner"],
+                                                   is_active=True).count(),
+            "courses": Course.objects.filter(organization=obj, status='published').count(),
+            "upcoming_events": 0
         }
 
     def get_current_user_membership(self, obj):
-        """Returns the requesting user's active membership record for this organization."""
         request = self.context.get('request')
-
         if not request or not request.user.is_authenticated:
             return None
-
-        membership = OrgMembership.objects.filter(
-            organization=obj,
-            user=request.user,
-            is_active=True
-        ).first()
-
+        membership = OrgMembership.objects.filter(organization=obj, user=request.user, is_active=True).first()
         if membership:
-            return {
-                'is_active': membership.is_active,
-                'role': membership.role,
-                'organization_slug': obj.slug
-            }
+            return {'is_active': membership.is_active, 'role': membership.role, 'organization_slug': obj.slug}
         return None
 
+    def update(self, instance, validated_data):
+        return super().update(instance, validated_data)
 
 
 class GuardianLinkSerializer(serializers.ModelSerializer):
@@ -128,37 +133,83 @@ class GuardianLinkSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class OrgBrandingSerializer(serializers.Serializer):
-    """Helper Serializer for validating branding JSON"""
-    logo_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
-    website = serializers.URLField(required=False, allow_blank=True, allow_null=True)
-    linkedin = serializers.URLField(required=False, allow_blank=True, allow_null=True)
-    facebook = serializers.URLField(required=False, allow_blank=True, allow_null=True)
-    twitter = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+class OrgLevelInputSerializer(serializers.Serializer):
+    """Simple validator for creating levels during org creation"""
+    name = serializers.CharField(max_length=100)
+    description = serializers.CharField(required=False, allow_blank=True)
+    order = serializers.IntegerField(required=False, default=0)
 
-class OrgPoliciesSerializer(serializers.Serializer):
-    """Helper Serializer for validating policies JSON"""
-    terms_of_service = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    privacy_policy = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    refund_policy = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+class OrgCategoryInputSerializer(serializers.Serializer):
+    """Simple validator for creating categories during org creation"""
+    name = serializers.CharField(max_length=100)
+    description = serializers.CharField(required=False, allow_blank=True)
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):
-    """
-    Serializer for creating a new organization.
-    Accepts basic info + nested branding and policies.
-    """
-    branding = OrgBrandingSerializer(required=False)
-    policies = OrgPoliciesSerializer(required=False)
+    logo = serializers.ImageField(required=False, allow_null=True)
+
+    levels = FormDataJSONField(required=False, write_only=True)
+    categories = FormDataJSONField(required=False, write_only=True)
+    branding = FormDataJSONField(required=False)
+    policies = FormDataJSONField(required=False)
 
     class Meta:
         model = Organization
-        fields = ['name', 'org_type', 'description', 'branding', 'policies']
+        fields = [
+            'name', 'org_type', 'description', 'logo',
+            'membership_price', 'membership_period', 'membership_duration_value',
+            'branding', 'policies',
+            'levels', 'categories', 'slug'
+        ]
+        read_only_fields = ['slug']
 
-    def validate_name(self, value):
-        if Organization.objects.filter(name__iexact=value).exists():
-            raise serializers.ValidationError("An organization with this name already exists.")
-        return value
+    def validate_levels(self, value):
+        """Ensure the JSON structure for levels is valid"""
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise serializers.ValidationError("Levels must be valid JSON.")
+
+        serializer = OrgLevelInputSerializer(data=value, many=True)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data
+
+    def validate_categories(self, value):
+        """Ensure the JSON structure for categories is valid"""
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                raise serializers.ValidationError("Categories must be valid JSON.")
+
+        serializer = OrgCategoryInputSerializer(data=value, many=True)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data
+
+    def create(self, validated_data):
+        levels_data = validated_data.pop('levels', [])
+        categories_data = validated_data.pop('categories', [])
+
+        # Simple create works now because branding/policies are already dicts
+        organization = Organization.objects.create(**validated_data)
+
+        # Create nested objects
+        if levels_data:
+            OrgLevel.objects.bulk_create([OrgLevel(organization=organization, **item) for item in levels_data])
+
+        if categories_data:
+            OrgCategory.objects.bulk_create(
+                [OrgCategory(organization=organization, **item) for item in categories_data])
+
+        # Set Owner
+        user = self.context['request'].user
+        OrgMembership.objects.create(
+            user=user, organization=organization, role='owner',
+            is_active=True, payment_status='paid'
+        )
+
+        return organization
 
 
 class OrgAdminInvitationSerializer(serializers.ModelSerializer):

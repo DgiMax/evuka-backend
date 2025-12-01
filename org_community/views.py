@@ -6,8 +6,8 @@ from django.contrib.auth import get_user_model
 from rest_framework.filters import SearchFilter
 
 from organizations.models import Organization, OrgMembership
-from organizations.permissions import IsOrgAdminOrOwner
-from organizations.serializers import OrgUserSerializer
+from organizations.permissions import IsOrgAdminOrOwner, IsOrgStaff
+from organizations.serializers import OrgUserSerializer, OrgAdminInvitationSerializer
 
 from .models import OrgJoinRequest, OrgInvitation
 from .serializers import (
@@ -24,7 +24,6 @@ User = get_user_model()
 class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Public API endpoint to list and search for approved organizations.
-    Anonymous users can browse, authenticated users see extra context.
     """
     permission_classes = [permissions.AllowAny]
     serializer_class = OrgDiscoverySerializer
@@ -39,8 +38,6 @@ class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
 class RequestToJoinView(generics.CreateAPIView):
     """
     Authenticated users can POST here to request to join an org.
-    e.g., POST /community/api/request-join/
-         {"organization": "org-slug", "message": "I'm a tutor"}
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OrgJoinRequestCreateSerializer
@@ -52,13 +49,23 @@ class RequestToJoinView(generics.CreateAPIView):
 class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Admins can list, approve, or reject pending join requests.
-    This ViewSet is context-aware via the X-Organization-Slug header.
+    Tutors can VIEW the list (Read Only).
     """
     serializer_class = OrgJoinRequestSerializer
-    permission_classes = [IsOrgAdminOrOwner]
+    permission_classes = [IsOrgStaff]  # Tutors get Read-only access
 
     def get_queryset(self):
         active_org = getattr(self.request, "active_organization", None)
+
+        if not active_org:
+            slug = self.request.headers.get("X-Organization-Slug")
+            if slug:
+                try:
+                    active_org = Organization.objects.get(slug=slug)
+                    self.request.active_organization = active_org
+                except Organization.DoesNotExist:
+                    pass
+
         if not active_org:
             return OrgJoinRequest.objects.none()
 
@@ -70,6 +77,7 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def approve(self, request, pk=None):
+        # IsOrgStaff ensures only Admins reach here (POST)
         req = self.get_object()
         if req.status != 'pending':
             return Response({"error": "Request not pending."}, status=status.HTTP_400_BAD_REQUEST)
@@ -107,10 +115,46 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"status": "Request rejected."})
 
 
+class OrgSentInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Admins can list and revoke sent invitations.
+    Tutors can VIEW the list (Read Only).
+    """
+    serializer_class = OrgAdminInvitationSerializer
+    permission_classes = [IsOrgStaff]  # Tutors get Read-only access
+
+    def get_queryset(self):
+        active_org = getattr(self.request, "active_organization", None)
+
+        if not active_org:
+            slug = self.request.headers.get("X-Organization-Slug")
+            if slug:
+                try:
+                    active_org = Organization.objects.get(slug=slug)
+                    self.request.active_organization = active_org
+                except Organization.DoesNotExist:
+                    pass
+
+        if not active_org:
+            return OrgInvitation.objects.none()
+
+        return OrgInvitation.objects.filter(
+            organization=active_org,
+            status="pending"
+        ).select_related('invited_user')
+
+    @action(detail=True, methods=['post'])
+    def revoke(self, request, pk=None):
+        inv = self.get_object()
+        if inv.status != 'pending':
+            return Response({"error": "Invitation not pending."}, status=400)
+        inv.delete()
+        return Response({"status": "Invitation revoked"})
+
+
 class UserInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Authenticated users can list, accept, or reject their PENDING invitations.
-    This is for the user's personal "My Invitations" page/section.
     """
     serializer_class = OrgInvitationSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -124,9 +168,6 @@ class UserInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def accept(self, request, pk=None):
-        """
-        Accept an invitation. This creates the OrgMembership.
-        """
         inv = self.get_object()
 
         if OrgMembership.objects.filter(user=inv.invited_user, organization=inv.organization).exists():
@@ -155,9 +196,6 @@ class UserInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        """
-        Reject an invitation.
-        """
         inv = self.get_object()
         inv.status = 'rejected'
         inv.save()
@@ -167,7 +205,6 @@ class UserInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
 class UserJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Authenticated users can list and cancel their *own* pending join requests.
-    This is for the user's personal "My Requests" page/section.
     """
     serializer_class = UserJoinRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -180,9 +217,6 @@ class UserJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        """
-        Allows a user to cancel (delete) their own pending join request.
-        """
         req = self.get_object()
 
         if req.status != 'pending':

@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
+from corsheaders.defaults import default_headers
 
 # ---------------------------------------
 # Load environment variables
@@ -37,7 +38,6 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Your Custom Apps
     'users',
     'organizations',
     'courses',
@@ -92,13 +92,21 @@ ASGI_APPLICATION = "DVuka_Backend.asgi.application"
 # ---------------------------------------
 # Database (Strictly SQLite as requested)
 # ---------------------------------------
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         # We try to save to 'db_volume' folder if it exists (for Docker), else local folder
+#         'NAME': BASE_DIR / 'db_volume' / 'db.sqlite3' if (BASE_DIR / 'db_volume').exists() else BASE_DIR / 'db.sqlite3',
+#     }
+# }
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        # We try to save to 'db_volume' folder if it exists (for Docker), else local folder
-        'NAME': BASE_DIR / 'db_volume' / 'db.sqlite3' if (BASE_DIR / 'db_volume').exists() else BASE_DIR / 'db.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
 
 # ---------------------------------------
 # Channels / Redis
@@ -124,9 +132,15 @@ else:
 AUTH_USER_MODEL = "users.User"
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {
+            'min_length': 10,
+        }
+    },
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+    {'NAME': 'users.validators.ComplexPasswordValidator',},
 ]
 
 # ---------------------------------------
@@ -259,6 +273,10 @@ JITSI_USE_SSL = os.getenv("JITSI_USE_SSL", "True").lower() == "true"
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-organization-slug",
+]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True

@@ -1,12 +1,9 @@
-# your_project/views.py
-
 from django.http import JsonResponse
 from django.db.models import Q
 from django.utils import timezone
 from courses.models import Course
 from events.models import Event
 from organizations.models import Organization
-# Import the utility function
 from users.utils.search_utils import sqlite_search_model
 
 

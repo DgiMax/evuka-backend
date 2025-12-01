@@ -11,6 +11,7 @@ from courses.serializers import CourseListSerializer
 from events.models import Event
 from live.models import LiveLesson
 from organizations.models import OrgMembership
+from organizations.serializers import OrgMembershipSerializer
 from revenue.models import Transaction, Payout, Wallet
 from users.models import CreatorProfile, Subject, StudentProfile, TutorPayoutMethod, NewsletterSubscriber
 
@@ -19,7 +20,12 @@ signer = TimestampSigner()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True)
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        validators=[validate_password], # <--- This links to Django's strict validation
+        style={'input_type': 'password'}
+    )
 
     class Meta:
         model = User
@@ -57,6 +63,7 @@ class VerifyEmailSerializer(serializers.Serializer):
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
+    organizations = OrgMembershipSerializer(source='memberships', many=True, read_only=True)
     class Meta:
         model = User
         fields = (
@@ -66,6 +73,7 @@ class UserDetailSerializer(serializers.ModelSerializer):
             "is_verified",
             "is_tutor",
             "is_student",
+            'organizations'
         )
 
 
@@ -74,16 +82,29 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, required=True)
 
     def validate(self, data):
-        username = data.get("username")
+        login_input = data.get("username")
         password = data.get("password")
-        user = authenticate(username=username, password=password)
+
+        if '@' in login_input:
+            try:
+                user_obj = User.objects.get(email=login_input)
+                login_input = user_obj.username
+            except User.DoesNotExist:
+                pass
+
+        user = authenticate(username=login_input, password=password)
 
         if not user:
-            raise serializers.ValidationError("Invalid username or password.")
+            raise serializers.ValidationError("Invalid credentials.")
+
         if not user.is_verified:
             raise serializers.ValidationError("Account not verified.")
 
+        if not user.is_active:
+            raise serializers.ValidationError("User account is disabled.")
+
         refresh = RefreshToken.for_user(user)
+
         user_data = UserDetailSerializer(user).data
 
         return {
