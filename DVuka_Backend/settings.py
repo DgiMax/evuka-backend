@@ -267,6 +267,8 @@ JITSI_APP_ID = os.getenv("JITSI_APP_ID")
 JITSI_APP_SECRET = os.getenv("JITSI_APP_SECRET")
 JITSI_USE_SSL = os.getenv("JITSI_USE_SSL", "True").lower() == "true"
 
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
 # ---------------------------------------
 # CORS / CSRF / Proxy
 # ---------------------------------------

@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.shortcuts import get_object_or_404
+from django.utils.text import slugify
 from django.conf import settings
 from rest_framework import generics, status, permissions
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -18,6 +19,8 @@ from django.utils import timezone
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 from courses.models import Course, Enrollment, LessonProgress
 from events.models import Event
@@ -37,6 +40,7 @@ from .serializers import (
     CreatorProfileSerializer, DashboardLiveLessonSerializer, DashboardEventMinimalSerializer,
     DashboardCourseMinimalSerializer, WalletSerializer, TransactionSerializer, TutorPayoutMethodSerializer,
     PayoutSerializer, CreatorProfilePublicSerializer, StudentProfileReadSerializer, NewsletterSubscriberSerializer,
+    GoogleLoginSerializer, UserDetailSerializer,
 )
 from users.serializers import WebSocketTokenSerializer
 
@@ -241,6 +245,112 @@ class LoginView(APIView):
         )
 
         return response
+
+
+class GoogleLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = serializer.validated_data['token']
+
+        try:
+            # 1. Verify the token with Google
+            # (Make sure settings.GOOGLE_CLIENT_ID matches your React .env exactly)
+            idinfo = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                settings.GOOGLE_CLIENT_ID
+            )
+
+            email = idinfo['email']
+            first_name = idinfo.get('given_name', '')
+            last_name = idinfo.get('family_name', '')
+
+            # 2. Find or Create User
+            try:
+                user = User.objects.get(email=email)
+                # Ensure verified if they logged in via Google
+                if not user.is_verified:
+                    user.is_verified = True
+                    user.save()
+
+            except User.DoesNotExist:
+                # --- CREATE NEW USER ---
+                base_username = slugify(email.split('@')[0])
+                username = base_username
+                counter = 1
+                while User.objects.filter(username=username).exists():
+                    username = f"{base_username}{counter}"
+                    counter += 1
+
+                user = User.objects.create(
+                    username=username,
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_verified=True,  # Trusted provider
+                    is_active=True,
+                    is_student=True,  # ✅ Default Role
+                    is_tutor=False  # ✅ Tutor logic handles update later
+                )
+
+                user.set_unusable_password()
+                user.save()
+
+            # 3. Always Ensure Student Profile Exists
+            StudentProfile.objects.get_or_create(user=user)
+
+            # 4. Generate JWT
+            refresh = RefreshToken.for_user(user)
+
+            # Prepare user data
+            user_data = UserDetailSerializer(user).data
+
+            response = Response(
+                {
+                    "detail": "Login successful",
+                    "user": user_data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+            # 5. Set Cookies
+            secure_cookie = not settings.DEBUG
+
+            response.set_cookie(
+                key="access_token",
+                value=str(refresh.access_token),
+                httponly=True,
+                secure=secure_cookie,
+                samesite="Lax",
+                max_age=settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"].total_seconds(),
+                path="/",
+            )
+
+            response.set_cookie(
+                key="refresh_token",
+                value=str(refresh),
+                httponly=True,
+                secure=secure_cookie,
+                samesite="Lax",
+                max_age=settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds(),
+                path="/",
+            )
+
+            return response
+
+        except ValueError as e:
+            # --- DEBUG PRINT FOR VALUE ERRORS (e.g. Audience mismatch) ---
+            print(f"❌ GOOGLE AUTH VALUE ERROR: {e}")
+            return Response({"detail": "Invalid Google token."}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            # --- DEBUG PRINT FOR GENERAL ERRORS ---
+            print(f"❌ GENERAL LOGIN ERROR: {e}")
+            return Response({"detail": "Google login failed."}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class LogoutView(APIView):
