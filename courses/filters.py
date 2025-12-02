@@ -1,64 +1,36 @@
-from django_filters import rest_framework as filters
+import django_filters
 from django.db.models import Q
 from .models import Course
 
 
-class CourseFilter(filters.FilterSet):
-    category = filters.CharFilter(method='filter_categories')
-    level = filters.CharFilter(method='filter_levels')
-    is_free = filters.BooleanFilter(field_name='price', lookup_expr='isnull')
-    min_price = filters.CharFilter(method='filter_price_range')
-    max_price = filters.CharFilter(method='filter_price_range')
-    price_range = filters.CharFilter(method='filter_price_range')
+class CourseFilter(django_filters.FilterSet):
+    # Custom method to handle Parent OR Child category matching
+    category = django_filters.CharFilter(method='filter_by_category_hierarchy')
+
+    # Standard filters
+    level = django_filters.CharFilter(field_name='global_level__name', lookup_expr='iexact')
+    min_price = django_filters.NumberFilter(field_name='price', lookup_expr='gte')
+    max_price = django_filters.NumberFilter(field_name='price', lookup_expr='lte')
 
     class Meta:
         model = Course
-        fields = ['category', 'level', 'is_free', 'min_price', 'max_price', 'price_range']
+        fields = ['category', 'level', 'min_price', 'max_price']
 
-    def filter_categories(self, queryset, name, value):
-        slug_list = self.data.getlist('category')
-        if not slug_list:
+    def filter_by_category_hierarchy(self, queryset, name, value):
+        """
+        Filters courses if the slug matches either the GlobalSubCategory 
+        OR the GlobalCategory (Parent).
+        """
+        # Handle cases where multiple categories might be sent (e.g. ?category=a&category=b)
+        values = self.request.GET.getlist('category') if self.request else [value]
+
+        if not values:
             return queryset
 
-        q_objects = Q()
-        for slug in slug_list:
-            q_objects |= Q(global_subcategory__slug__iexact=slug)
-
-        return queryset.filter(q_objects)
-
-    def filter_levels(self, queryset, name, value):
-        name_list = self.data.getlist('level')
-        if not name_list:
-            return queryset
-
-        q_objects = Q()
-        for level_name in name_list:
-            q_objects |= Q(global_level__name__iexact=level_name)
-
-        return queryset.filter(q_objects)
-
-    def filter_price_range(self, queryset, name, value):
-        min_val_str = self.data.get('min_price')
-        max_val_str = self.data.get('max_price')
-
-        if not min_val_str and not max_val_str:
-            return queryset
-
-        queryset = queryset.filter(price__isnull=False)
-
-        if min_val_str:
-            try:
-                min_val = float(min_val_str)
-                if min_val > 0:
-                    queryset = queryset.filter(price__gte=min_val)
-            except ValueError:
-                return queryset.none()
-
-        if max_val_str:
-            try:
-                max_val = float(max_val_str)
-                queryset = queryset.filter(price__lte=max_val)
-            except ValueError:
-                return queryset.none()
-
-        return queryset
+        # Logic: 
+        # 1. Is the slug a Subcategory? (e.g., 'web-development')
+        # 2. Is the slug a Main Category? (e.g., 'technology')
+        return queryset.filter(
+            Q(global_subcategory__slug__in=values) |
+            Q(global_subcategory__category__slug__in=values)
+        ).distinct()

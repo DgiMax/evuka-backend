@@ -39,6 +39,7 @@ from .serializers import (
     QuizQuestionLearningSerializer, ExistingAnswerSerializer, AssignmentSubmissionCreateSerializer,
     CourseNoteSerializer, CourseReplySerializer, CourseQuestionSerializer,
 )
+from .services import CourseProgressService
 
 
 class CourseViewSet(
@@ -185,6 +186,13 @@ class CourseViewSet(
         course = self.get_object()
         serializer = self.get_serializer(course)
         return Response(serializer.data)
+
+    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="progress-report")
+    def progress_report(self, request, slug=None):
+        course = self.get_object()
+        service = CourseProgressService(request.user, course)
+        data = service.calculate_progress()
+        return Response(data)
 
 
 class CourseNoteViewSet(viewsets.GenericViewSet):
@@ -426,31 +434,34 @@ class FilterOptionsView(APIView):
     Provides the frontend with the necessary data to build the filter sidebar.
     Context-aware between global and organization courses.
     """
-
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
         active_org = getattr(request, "active_organization", None)
 
+        # 1. Global Categories (Parents) - Added thumbnail
         global_categories = GlobalCategory.objects.all().order_by("name")
         global_categories_data = [{
             "id": str(cat.id),
             "name": cat.name,
-            "slug": cat.slug
+            "slug": cat.slug,
+            "thumbnail": cat.thumbnail.url if cat.thumbnail else None
         } for cat in global_categories]
 
-        global_subcategories = GlobalSubCategory.objects.all().select_related('category').order_by("category__name",
-                                                                                                   "name")
+        # 2. Global Subcategories - Added parent_slug for frontend matching
+        global_subcategories = GlobalSubCategory.objects.all().select_related('category').order_by("category__name", "name")
         global_subcategories_data = [{
             "id": str(sub.id),
             "name": sub.name,
             "slug": sub.slug,
-            "parent_id": str(sub.category_id)
+            "parent_id": str(sub.category_id),
+            "parent_slug": sub.category.slug  # <--- NEW: Vital for the drill-down logic
         } for sub in global_subcategories]
 
         global_levels = GlobalLevel.objects.all().order_by("order")
-        global_levels_data = [{"id": str(lvl.id), "name": lvl.name} for lvl in global_levels]
+        global_levels_data = [{"id": str(lvl.name), "name": lvl.name} for lvl in global_levels]
 
+        # Organization Logic
         if active_org:
             org_categories = OrgCategory.objects.filter(organization=active_org).order_by("name")
             org_levels = OrgLevel.objects.filter(organization=active_org).order_by("order")
@@ -488,6 +499,7 @@ class FilterOptionsView(APIView):
                 "context": "global",
             }
 
+        # Price Calculation
         max_price_agg = course_qs.aggregate(max_p=Max("price"))
         max_price = int(max_price_agg["max_p"]) if max_price_agg["max_p"] else 5000
 
@@ -875,7 +887,11 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         if submission_status in dict(AssignmentSubmission.SUBMISSION_STATUS_CHOICES):
             submissions = submissions.filter(submission_status=submission_status)
 
-        serializer = AssignmentSubmissionManagerSerializer(submissions, many=True)
+        serializer = AssignmentSubmissionManagerSerializer(
+            submissions,
+            many=True,
+            context={'request': request}
+        )
         return Response(serializer.data)
 
     @action(detail=True, methods=["patch"], url_path="assignments/grade/(?P<submission_pk>[^/.]+)")

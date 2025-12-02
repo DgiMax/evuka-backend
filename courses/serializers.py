@@ -75,6 +75,7 @@ class CourseListSerializer(serializers.ModelSerializer):
     is_enrolled = serializers.BooleanField(read_only=True)
     status = serializers.CharField(read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    progress = serializers.FloatField(read_only=True)
 
     class Meta:
         model = Course
@@ -82,7 +83,7 @@ class CourseListSerializer(serializers.ModelSerializer):
             "slug", "title", "thumbnail", "short_description",
             "instructor_name", "is_enrolled", "rating_avg",
             "price", "num_students", "category", "level",
-            "status", "status_display"
+            "status", "status_display", "progress"
         )
 
 

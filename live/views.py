@@ -13,6 +13,7 @@ from .models import LiveClass, LiveLesson
 from .serializers import LiveClassSerializer, LiveLessonSerializer, CourseWithLiveClassesSerializer
 from .permissions import IsTutorOrOrgAdmin
 from .utils.jitsi_token import generate_jitsi_token
+from django.conf import settings
 
 
 class LiveClassViewSet(viewsets.ModelViewSet):
@@ -53,7 +54,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             creator_profile=getattr(user, "creator_profile", None),
         )
         if instance.recurrence_type == "weekly" and instance.recurrence_days:
-            self._generate_lessons(instance)
+            instance.generate_lessons_batch(start_from=instance.start_date, days_ahead=30)
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -63,10 +64,12 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         if instance.recurrence_type == "weekly" and instance.recurrence_days:
             if mode == "all":
                 instance.lessons.all().delete()
-                self._generate_lessons(instance)
+                instance.generate_lessons_batch(start_from=instance.start_date, days_ahead=30)
+
             elif mode == "future":
                 instance.lessons.filter(date__gte=date.today()).delete()
-                self._generate_lessons(instance, start_date=date.today())
+                instance.generate_lessons_batch(start_from=date.today(), days_ahead=30)
+
         elif instance.recurrence_type == "none":
             instance.lessons.filter(date__gte=date.today()).delete()
 
@@ -133,18 +136,45 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             return Response({"error": "Not allowed to join"}, status=403)
 
         token = None
+        is_moderator = False
+        room_name = live_class.get_jitsi_room_name()
+        domain = getattr(settings, "JITSI_DOMAIN", "meet.e-vuka.com")
 
         if live_class.requires_auth:
             is_moderator = (user.id == live_class.creator.id)
-
             token = generate_jitsi_token(
                 user,
-                live_class.get_jitsi_room_name(),
+                room_name,
                 is_moderator=is_moderator
             )
 
-        join_url = f"{live_class.meeting_link}?jwt={token}" if token else live_class.meeting_link
-        return Response({"meeting_url": join_url}, status=200)
+        data = {
+            "domain": domain,
+            "room_name": room_name,
+            "jwt": token,
+            "user_info": {
+                "displayName": user.get_full_name(),
+                "email": user.email,
+            },
+            "config_overwrite": {
+                "startWithAudioMuted": True,
+                "startWithVideoMuted": True,
+                "prejoinPageEnabled": False,
+                "toolbarButtons": [
+                    'microphone', 'camera', 'closedcaptions', 'desktop', 'fullscreen',
+                    'fodeviceselection', 'hangup', 'profile', 'chat', 'recording',
+                    'livestreaming', 'etherpad', 'sharedvideo', 'settings', 'raisehand',
+                    'videoquality', 'filmstrip', 'invite', 'feedback', 'stats', 'shortcuts',
+                    'tileview', 'videobackgroundblur', 'download', 'help', 'mute-everyone',
+                    'security'
+                ] if is_moderator else [
+                    'microphone', 'camera', 'desktop', 'fullscreen',
+                    'fodeviceselection', 'hangup', 'chat', 'raisehand',
+                    'videoquality', 'tileview', 'settings'
+                ]
+            }
+        }
+        return Response(data, status=200)
 
 
 class LiveLessonViewSet(
@@ -210,23 +240,56 @@ class LiveLessonViewSet(
             if not live_class.can_join(user):
                 return Response({"error": "Not allowed to join"}, status=status.HTTP_403_FORBIDDEN)
 
-            token = None
+            # 1. Get Domain and Room
+            domain = getattr(settings, "JITSI_DOMAIN", "meet.e-vuka.com")
+            room_name = lesson.jitsi_room_name
 
+            # 2. Generate Token (If auth required)
+            token = None
+            is_moderator = False
             if live_class.requires_auth:
                 is_moderator = (user.id == live_class.creator.id)
-
+                # Ensure you have generate_jitsi_token imported!
                 token = generate_jitsi_token(
                     user,
-                    lesson.jitsi_room_name,
+                    room_name,
                     is_moderator=is_moderator
                 )
 
-            join_url = f"{lesson.jitsi_meeting_link}?jwt={token}" if token else lesson.jitsi_meeting_link
-            return Response({"meeting_url": join_url})
+            # 3. Construct the NEW response format
+            data = {
+                "domain": domain,
+                "room_name": room_name,
+                "jwt": token,
+                "user_info": {
+                    "displayName": user.get_full_name() or user.username,
+                    "email": user.email,
+                },
+                "config_overwrite": {
+                    "startWithAudioMuted": True,
+                    "startWithVideoMuted": True,
+                    "prejoinPageEnabled": False,
+                    # Tutors get admin tools, Students get basic tools
+                    "toolbarButtons": [
+                        'microphone', 'camera', 'closedcaptions', 'desktop', 'fullscreen',
+                        'fodeviceselection', 'hangup', 'profile', 'chat', 'recording',
+                        'livestreaming', 'etherpad', 'sharedvideo', 'settings', 'raisehand',
+                        'videoquality', 'filmstrip', 'invite', 'feedback', 'stats', 'shortcuts',
+                        'tileview', 'videobackgroundblur', 'download', 'help', 'mute-everyone',
+                        'security'
+                    ] if is_moderator else [
+                        'microphone', 'camera', 'desktop', 'fullscreen',
+                        'fodeviceselection', 'hangup', 'chat', 'raisehand',
+                        'videoquality', 'tileview', 'settings'
+                    ]
+                }
+            }
 
-        except Exception:
+            return Response(data)
+
+        except Exception as e:
+            print(f"Join Error: {e}")  # Print error to server logs for debugging
             return Response({"error": "An internal error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class AllLiveClassesViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CourseWithLiveClassesSerializer

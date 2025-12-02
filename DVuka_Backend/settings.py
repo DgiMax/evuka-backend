@@ -92,20 +92,19 @@ ASGI_APPLICATION = "DVuka_Backend.asgi.application"
 # ---------------------------------------
 # Database (Strictly SQLite as requested)
 # ---------------------------------------
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         # We try to save to 'db_volume' folder if it exists (for Docker), else local folder
-#         'NAME': BASE_DIR / 'db_volume' / 'db.sqlite3' if (BASE_DIR / 'db_volume').exists() else BASE_DIR / 'db.sqlite3',
-#     }
-# }
-
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': BASE_DIR / 'db_volume' / 'db.sqlite3' if (BASE_DIR / 'db_volume').exists() else BASE_DIR / 'db.sqlite3',
     }
 }
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
 
 
 # ---------------------------------------

@@ -1,4 +1,6 @@
 import uuid
+import calendar
+from datetime import timedelta, date, datetime
 
 from django.conf import settings
 from django.db import models
@@ -82,11 +84,11 @@ class LiveClass(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = generate_slug(self.title)
+            self.slug = slugify(f"{self.title}-{uuid.uuid4().hex[:8]}")
         if not self.meeting_link:
-            domain = get_jitsi_domain()
+            domain = getattr(settings, "JITSI_DOMAIN", "meet.jit.si")
             room_name = uuid.uuid4().hex[:10]
-            self.meeting_link = f"{domain}/{room_name}"
+            self.meeting_link = f"https://{domain}/{room_name}"
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -101,6 +103,58 @@ class LiveClass(models.Model):
         if self.allow_student_access:
             return True
         return False
+
+    def generate_lessons_batch(self, start_from=None, days_ahead=30):
+        """
+        Generates lessons for the next 'days_ahead' days.
+        Does not generate duplicates if a lesson already exists on that date/time.
+        """
+        if self.recurrence_type != "weekly" or not self.recurrence_days:
+            return
+
+        batch_start = start_from or date.today()
+        if batch_start < self.start_date:
+            batch_start = self.start_date
+
+        batch_end_limit = batch_start + timedelta(days=days_ahead)
+
+        course_end = self.end_date or (self.start_date + timedelta(weeks=52))  # Default cap 1 year if no end date
+
+        effective_end = min(batch_end_limit, course_end)
+
+        if batch_start > effective_end:
+            return
+
+        days_map = {day: time for day, time in self.recurrence_days.items()}
+        current_date = batch_start
+
+        while current_date <= effective_end:
+            weekday_name = calendar.day_name[current_date.weekday()]
+
+            if weekday_name in days_map:
+                time_str = days_map[weekday_name]
+                try:
+                    start_time = datetime.strptime(time_str, "%H:%M").time()
+
+                    dt_start = datetime.combine(current_date, start_time)
+                    dt_end = dt_start + timedelta(minutes=self.lesson_duration)
+                    end_time = dt_end.time()
+
+                    LiveLesson.objects.get_or_create(
+                        live_class=self,
+                        date=current_date,
+                        start_time=start_time,
+                        defaults={
+                            'title': f"{self.title} - {weekday_name} Session",
+                            'end_time': end_time,
+                            'jitsi_room_name': None,
+                            'jitsi_meeting_link': None
+                        }
+                    )
+                except ValueError:
+                    pass
+
+            current_date += timedelta(days=1)
 
 
 class LiveLesson(models.Model):
@@ -129,8 +183,8 @@ class LiveLesson(models.Model):
             unique_id = uuid.uuid4().hex[:6]
             self.jitsi_room_name = f"{slug}-{unique_id}"
         if not self.jitsi_meeting_link:
-            domain = get_jitsi_domain()
-            self.jitsi_meeting_link = f"{domain}/{self.jitsi_room_name}"
+            domain = getattr(settings, "JITSI_DOMAIN", "meet.jit.si")
+            self.jitsi_meeting_link = f"https://{domain}/{self.jitsi_room_name}"
         super().save(*args, **kwargs)
 
     def __str__(self):
