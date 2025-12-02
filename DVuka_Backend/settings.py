@@ -170,13 +170,14 @@ if USE_S3:
     STATICFILES_STORAGE = "DVuka_Backend.storages.StaticStorage"
 
     MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
-    STATIC_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STATIC_BUCKET_NAME}/"
+    # STATIC_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STATIC_BUCKET_NAME}/"
+
+    STATIC_URL = '/static/'
+    STATIC_ROOT = BASE_DIR / "staticfiles"
 else:
     STATIC_URL = '/static/'
     MEDIA_URL = '/media/'
 
-STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_ROOT = BASE_DIR / "media"
 
 # ---------------------------------------
 # REST & JWT
