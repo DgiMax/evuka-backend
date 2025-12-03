@@ -23,7 +23,7 @@ class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
         write_only=True,
         required=True,
-        validators=[validate_password], # <--- This links to Django's strict validation
+        validators=[validate_password],
         style={'input_type': 'password'}
     )
 
@@ -64,6 +64,7 @@ class VerifyEmailSerializer(serializers.Serializer):
 
 class UserDetailSerializer(serializers.ModelSerializer):
     organizations = OrgMembershipSerializer(source='memberships', many=True, read_only=True)
+
     class Meta:
         model = User
         fields = (
@@ -146,14 +147,25 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class DashboardEventSerializer(serializers.ModelSerializer):
+    banner_image = serializers.SerializerMethodField()
+
     class Meta:
         model = Event
         fields = ['title', 'slug', 'start_time', 'event_type', 'banner_image']
+
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
 
 
 class DashboardCourseSerializer(serializers.ModelSerializer):
     tutor = serializers.CharField(source='creator.get_full_name', read_only=True)
     progress = serializers.SerializerMethodField()
+    thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -162,6 +174,14 @@ class DashboardCourseSerializer(serializers.ModelSerializer):
     def get_progress(self, obj):
         progress_map = self.context.get('progress_map', {})
         return progress_map.get(obj.id, 0)
+
+    def get_thumbnail(self, obj):
+        if obj.thumbnail:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
+            return obj.thumbnail.url
+        return None
 
 
 class ProfileCertificateSerializer(serializers.ModelSerializer):
@@ -182,10 +202,12 @@ class ProfileOrgMembershipSerializer(serializers.ModelSerializer):
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     """
-    Serializer for the StudentProfile.
-    Handles create, retrieve, and update.
+    Serializer for writing to the StudentProfile.
     """
     user = serializers.ReadOnlyField(source='user.username')
+    # For writing, ImageField is okay, but usually we prefer consistent response.
+    # We will override to_representation.
+    avatar = serializers.ImageField(required=False, allow_null=True)
 
     class Meta:
         model = StudentProfile
@@ -198,6 +220,16 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at']
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if instance.avatar:
+            request = self.context.get('request')
+            if request:
+                ret['avatar'] = request.build_absolute_uri(instance.avatar.url)
+            else:
+                ret['avatar'] = instance.avatar.url
+        return ret
+
 
 class StudentProfileReadSerializer(serializers.ModelSerializer):
     """
@@ -207,6 +239,9 @@ class StudentProfileReadSerializer(serializers.ModelSerializer):
     email = serializers.CharField(source='user.email', read_only=True)
     phone_number = serializers.CharField(source='user.phone_number',
                                          read_only=True)
+
+    # Use SerializerMethodField for absolute URL
+    avatar = serializers.SerializerMethodField()
 
     memberships = ProfileOrgMembershipSerializer(many=True, source='user.memberships', read_only=True)
     certificates = ProfileCertificateSerializer(many=True, source='user.certificates', read_only=True)
@@ -223,6 +258,14 @@ class StudentProfileReadSerializer(serializers.ModelSerializer):
             'memberships', 'certificates',
             'enrolled_courses_count', 'completed_courses_count', 'certificates_count',
         ]
+
+    def get_avatar(self, obj):
+        if obj.avatar:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.avatar.url)
+            return obj.avatar.url
+        return None
 
     def get_enrolled_courses_count(self, obj):
         """Counts actively enrolled courses."""
@@ -250,6 +293,7 @@ class CreatorProfilePublicSerializer(serializers.ModelSerializer):
     """
     subjects = SubjectSerializer(many=True, read_only=True)
     courses = serializers.SerializerMethodField()
+    profile_image = serializers.SerializerMethodField()
 
     class Meta:
         model = CreatorProfile
@@ -257,6 +301,14 @@ class CreatorProfilePublicSerializer(serializers.ModelSerializer):
             'display_name', 'bio', 'profile_image', 'headline',
             'intro_video', 'education', 'subjects', 'courses', 'is_verified'
         )
+
+    def get_profile_image(self, obj):
+        if obj.profile_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.profile_image.url)
+            return obj.profile_image.url
+        return None
 
     def get_courses(self, obj):
         courses_qs = Course.objects.filter(
@@ -286,6 +338,9 @@ class CreatorProfileSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='user.username')
     memberships = serializers.SerializerMethodField()
 
+    # Use ImageField for writing, but override representation for reading
+    profile_image = serializers.ImageField(required=False, allow_null=True)
+
     class Meta:
         model = CreatorProfile
         fields = [
@@ -302,6 +357,16 @@ class CreatorProfileSerializer(serializers.ModelSerializer):
             'memberships',
         ]
         read_only_fields = ['is_verified']
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if instance.profile_image:
+            request = self.context.get('request')
+            if request:
+                ret['profile_image'] = request.build_absolute_uri(instance.profile_image.url)
+            else:
+                ret['profile_image'] = instance.profile_image.url
+        return ret
 
     def get_memberships(self, obj):
         """
@@ -343,22 +408,43 @@ class CreatorProfileSerializer(serializers.ModelSerializer):
 
         return instance
 
+
 class DashboardCourseMinimalSerializer(serializers.ModelSerializer):
     """Lightweight serializer for 'Best Performing Courses' list."""
     student_count = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
         fields = ["id", "title", "slug", "thumbnail", "student_count", "revenue", "rating_avg"]
 
+    def get_thumbnail(self, obj):
+        if obj.thumbnail:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
+            return obj.thumbnail.url
+        return None
+
+
 class DashboardEventMinimalSerializer(serializers.ModelSerializer):
     """Lightweight serializer for 'Upcoming Events' list."""
     start_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M")
+    banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
         fields = ["id", "title", "slug", "start_time", "banner_image", "event_type"]
+
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
+
 
 class DashboardLiveLessonSerializer(serializers.ModelSerializer):
     """Lightweight serializer for 'Upcoming Classes' list."""
@@ -376,20 +462,24 @@ class TransactionSerializer(serializers.ModelSerializer):
         model = Transaction
         fields = ["id", "tx_type", "amount", "description", "created_at"]
 
+
 class PayoutSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payout
         fields = ["id", "amount", "status", "reference", "created_at", "processed_at"]
+
 
 class TutorPayoutMethodSerializer(serializers.ModelSerializer):
     class Meta:
         model = TutorPayoutMethod
         fields = ["id", "method_type", "display_details", "is_active"]
 
+
 class WalletSerializer(serializers.ModelSerializer):
     class Meta:
         model = Wallet
         fields = ["balance", "currency"]
+
 
 class WebSocketTokenSerializer(serializers.Serializer):
     token = serializers.CharField(max_length=500)

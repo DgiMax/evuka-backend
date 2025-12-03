@@ -1,7 +1,7 @@
 from django.db import models
 from django.db.models import Q, CheckConstraint
 from django.contrib.auth import get_user_model
-from django.core.files.storage import default_storage
+# Removed: from django.core.files.storage import default_storage (Too slow for list views)
 
 from courses.models import Course
 from events.models import Event
@@ -49,18 +49,13 @@ class Wishlist(models.Model):
         return "course" if self.course else "event"
 
     @property
-    def item_image(self):
-        """Return a safe image/thumbnail URL for the wishlist item, checking existence."""
+    def item_image_url(self):
+        """
+        Returns the relative URL string from the underlying model.
+        We renamed this to 'item_image_url' to be clear it's just the path.
+        """
         if self.course and self.course.thumbnail:
-            thumb = self.course.thumbnail
-            if thumb and getattr(thumb, "name", None) and default_storage.exists(thumb.name):
-                return thumb.url
-            return None
-
-        if self.event:
-            img = self.event.banner_image
-            if img and getattr(img, "name", None) and default_storage.exists(img.name):
-                return img.url
-            return None
-
+            return self.course.thumbnail.url
+        if self.event and self.event.banner_image:
+            return self.event.banner_image.url
         return None

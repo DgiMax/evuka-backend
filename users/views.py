@@ -541,7 +541,7 @@ class DashboardAPIView(APIView):
             context={'request': request, 'progress_map': progress_map}
         )
 
-        event_serializer = DashboardEventSerializer(registered_events, many=True)
+        event_serializer = DashboardEventSerializer(registered_events, many=True, context={'request': request})
 
         data = {
             'context_type': context_type,
@@ -730,8 +730,8 @@ class TutorDashboardView(APIView):
                 "total_events": total_events,
             },
             "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes_qs, many=True).data,
-            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events_list_qs, many=True).data,
-            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses_qs, many=True).data,
+            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events_list_qs, many=True, context={'request': request}).data,
+            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses_qs, many=True, context={'request': request}).data,
         }
 
         return Response(data, status=status.HTTP_200_OK)

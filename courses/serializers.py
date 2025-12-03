@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
@@ -12,6 +13,7 @@ from .models import Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalS
 from users.models import CreatorProfile
 from live.serializers import LiveClassSerializer, LiveClassMinimalSerializer
 from django.db.models import Sum, Case, When
+
 
 User = get_user_model()
 
@@ -178,7 +180,6 @@ class QuizQuestionLearningSerializer(serializers.ModelSerializer):
 
     def get_options(self, obj):
         shuffled_options = list(obj.options.all())
-        import random
         random.shuffle(shuffled_options)
 
         return [{'id': opt.id, 'text': opt.text} for opt in shuffled_options]
@@ -437,6 +438,9 @@ class LessonTutorDetailSerializer(serializers.ModelSerializer):
 
     def get_video_file(self, obj):
         if obj.video_file:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.video_file.url)
             return obj.video_file.url
         return None
 
@@ -484,6 +488,9 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
     def get_thumbnail(self, obj):
         """ Returns the full URL for the thumbnail """
         if obj.thumbnail:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
             return obj.thumbnail.url
         return None
 
@@ -668,6 +675,13 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
         return instance
 
     def to_representation(self, instance):
+        thumbnail_url = None
+        if instance.thumbnail:
+            request = self.context.get('request')
+            if request:
+                thumbnail_url = request.build_absolute_uri(instance.thumbnail.url)
+            else:
+                thumbnail_url = instance.thumbnail.url
         return {
             "id": instance.id,
             "title": instance.title,
@@ -675,7 +689,7 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             "status": instance.status,
             "is_published": instance.is_published,
             "price": instance.price,
-            "thumbnail_url": instance.thumbnail.url if instance.thumbnail else None,
+            "thumbnail_url": thumbnail_url,
         }
 
 
@@ -941,6 +955,9 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
     def get_thumbnail(self, obj):
         """ Returns the full URL for the thumbnail """
         if obj.thumbnail:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
             return obj.thumbnail.url
         return None
 

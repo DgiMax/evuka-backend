@@ -5,12 +5,13 @@ from events.models import Event
 
 
 class WishlistSerializer(serializers.ModelSerializer):
-    # Use ReadOnlyField to directly access the model's @property methods.
-    # No custom 'get_*' methods are needed!
+    # Use ReadOnlyField for simple strings
     item_title = serializers.ReadOnlyField()
-    item_image = serializers.ReadOnlyField()  # This now correctly uses the model's logic
     item_slug = serializers.ReadOnlyField()
     item_type = serializers.ReadOnlyField()
+
+    # CRITICAL FIX: Use SerializerMethodField for the image to make it absolute
+    item_image = serializers.SerializerMethodField()
 
     # For creation
     course_slug = serializers.CharField(write_only=True, required=False, allow_null=True)
@@ -29,8 +30,21 @@ class WishlistSerializer(serializers.ModelSerializer):
             "course_slug",
             "event_slug",
         ]
-        # The 'read_only_fields' list is no longer needed since we defined
-        # each display field as a ReadOnlyField above.
+
+    def get_item_image(self, obj):
+        """
+        Takes the relative path from the model and builds a full URL.
+        e.g., /media/x.jpg -> https://api.e-vuka.com/media/x.jpg
+        """
+        # Note: We are calling the property 'item_image_url' defined in the updated model
+        relative_path = obj.item_image_url
+
+        if relative_path:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(relative_path)
+            return relative_path
+        return None
 
     def validate(self, data):
         """

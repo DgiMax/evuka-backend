@@ -445,7 +445,7 @@ class FilterOptionsView(APIView):
             "id": str(cat.id),
             "name": cat.name,
             "slug": cat.slug,
-            "thumbnail": cat.thumbnail.url if cat.thumbnail else None
+            "thumbnail": request.build_absolute_uri(cat.thumbnail.url) if cat.thumbnail else None
         } for cat in global_categories]
 
         # 2. Global Subcategories - Added parent_slug for frontend matching

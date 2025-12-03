@@ -14,13 +14,20 @@ class OrgDiscoverySerializer(serializers.ModelSerializer):
     is_member = serializers.SerializerMethodField()
     has_pending_request = serializers.SerializerMethodField()
 
-    # Explicitly include the logo from the ImageField
-    logo = serializers.ImageField(read_only=True)
+    # FIXED: Use SerializerMethodField to ensure absolute URL for the logo
+    logo = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
-        # Added 'logo' to fields, removed manual OrgBrandingSerializer
         fields = ('id', 'name', 'slug', 'description', 'logo', 'branding', 'stats', 'is_member', 'has_pending_request')
+
+    def get_logo(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
     def get_stats(self, obj):
         # Optimized count queries
@@ -93,7 +100,6 @@ class OrgJoinRequestSerializer(serializers.ModelSerializer):
     Includes nested user details AND Organization logo.
     """
     user = OrgUserSerializer(read_only=True)
-    # Added Organization info so the list displays the logo
     organization = OrganizationSimpleSerializer(read_only=True)
 
     class Meta:
@@ -106,7 +112,6 @@ class OrgInvitationSerializer(serializers.ModelSerializer):
     Serializer for USERS to view their pending invitations.
     Includes nested details of who invited them + Organization Logo.
     """
-    # Use SimpleSerializer to get name + logo
     organization = OrganizationSimpleSerializer(read_only=True)
     invited_by = OrgUserSerializer(read_only=True)
     invited_user = OrgUserSerializer(read_only=True)
@@ -120,7 +125,6 @@ class UserJoinRequestSerializer(serializers.ModelSerializer):
     """
     Serializer for USERS to view their *own* sent join requests.
     """
-    # Use SimpleSerializer to get name + logo
     organization = OrganizationSimpleSerializer(read_only=True)
 
     class Meta:

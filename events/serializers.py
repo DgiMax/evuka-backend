@@ -13,10 +13,20 @@ from .models import (
 
 
 class EventAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+
     class Meta:
         model = EventAttachment
         fields = ["id", "file", "uploaded_by", "uploaded_at"]
         read_only_fields = ["uploaded_by", "uploaded_at"]
+
+    def get_file(self, obj):
+        if obj.file:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.file.url)
+            return obj.file.url
+        return None
 
 
 class EventLearningObjectiveSerializer(serializers.ModelSerializer):
@@ -44,15 +54,26 @@ class EventRuleSerializer(serializers.ModelSerializer):
 
 
 class SimpleCourseSerializer(serializers.ModelSerializer):
+    thumbnail = serializers.SerializerMethodField()
+
     class Meta:
         model = Course
         fields = ["id", "slug", "title", "price", "rating_avg", "num_ratings", "thumbnail"]
+
+    def get_thumbnail(self, obj):
+        if obj.thumbnail:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.thumbnail.url)
+            return obj.thumbnail.url
+        return None
 
 
 class EventListSerializer(serializers.ModelSerializer):
     organizer_name = serializers.CharField(source="organizer.get_full_name", read_only=True)
     course_title = serializers.CharField(source="course.title", read_only=True)
     computed_status = serializers.CharField(read_only=True)
+    banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -66,6 +87,14 @@ class EventListSerializer(serializers.ModelSerializer):
             "computed_status",
         ]
 
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
+
 
 class EventSerializer(serializers.ModelSerializer):
     attachments = EventAttachmentSerializer(many=True, read_only=True)
@@ -78,6 +107,7 @@ class EventSerializer(serializers.ModelSerializer):
     is_full = serializers.BooleanField(read_only=True)
     is_registered = serializers.SerializerMethodField()
     computed_status = serializers.CharField(read_only=True)
+    banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -117,6 +147,14 @@ class EventSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["organizer", "slug", "created_at", "updated_at"]
+
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
 
     def get_is_registered(self, obj):
         request = self.context.get("request")
@@ -225,16 +263,10 @@ class CreateEventSerializer(serializers.ModelSerializer):
         return event
 
     def to_representation(self, instance):
-        """Return complete event data including nested relationships."""
-        data = super().to_representation(instance)
-
-        data["learning_objectives"] = EventLearningObjectiveSerializer(
-            instance.learning_objectives.all(), many=True
-        ).data
-        data["agenda"] = EventAgendaSerializer(instance.agenda.all(), many=True).data
-        data["rules"] = EventRuleSerializer(instance.rules.all(), many=True).data
-
-        return data
+        """Return complete event data including nested relationships and absolute URLs."""
+        # Note: We don't call super().to_representation(instance) immediately because we need custom URL handling
+        # Using the standard EventSerializer for representation ensures consistency with absolute URLs
+        return EventSerializer(instance, context=self.context).data
 
     def update(self, instance, validated_data):
         """Handle nested updates for event editing."""
@@ -275,6 +307,7 @@ class TutorEventDetailSerializer(serializers.ModelSerializer):
     rules = EventRuleSerializer(many=True, read_only=True)
     computed_status = serializers.CharField(read_only=True)
     registrations_count = serializers.IntegerField(source="registrations.count", read_only=True)
+    banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -310,6 +343,14 @@ class TutorEventDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["slug", "created_at", "updated_at"]
+
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
 
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
@@ -349,6 +390,7 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
 
 class FeaturedEventSerializer(serializers.ModelSerializer):
     """Lightweight serializer for the 'Best Upcoming' homepage card."""
+    banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -364,3 +406,11 @@ class FeaturedEventSerializer(serializers.ModelSerializer):
             "price",
             "currency",
         ]
+
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None

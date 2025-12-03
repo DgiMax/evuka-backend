@@ -11,8 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from rest_framework.generics import CreateAPIView
 
-# --- External App Imports (Payments/Orders) ---
-# Ensure these apps exist in your INSTALLED_APPS
+# --- External App Imports ---
 from orders.models import Order, OrderItem
 from payments.models import Payment
 from payments.services.paystack import initialize_payment
@@ -22,7 +21,7 @@ from .models import Organization, OrgMembership, GuardianLink, OrgCategory, OrgL
 from .filters import OrganizationFilter
 from .permissions import IsOrgMember, IsOrgAdminOrOwner, IsOrgStaff, get_active_org
 
-# Imported from your local serializers.py
+# Imported from your local serializers.py (which we fixed in the previous step)
 from .serializers import (
     OrganizationSerializer, OrgMembershipSerializer, GuardianLinkSerializer,
     OrgLevelSerializer, OrgCategorySerializer, OrganizationCreateSerializer,
@@ -32,7 +31,6 @@ from .serializers import (
 )
 
 # --- Org Community Imports ---
-# Assuming these exist in org_community based on your previous code
 from org_community.models import OrgJoinRequest, OrgInvitation
 from org_community.serializers import OrgJoinRequestSerializer, OrgInvitationSerializer
 
@@ -56,6 +54,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = Organization.objects.filter(approved=True)
         if self.request.user.is_authenticated:
+            # Users can also see unapproved orgs they belong to (e.g., drafts)
             my_orgs = Organization.objects.filter(memberships__user=self.request.user)
             queryset = (queryset | my_orgs).distinct()
 
@@ -84,6 +83,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Organization slug header missing."}, status=400)
 
         try:
+            # We use the base queryset logic to ensure they have access
             org = self.get_queryset().get(slug=slug)
         except Organization.DoesNotExist:
             return Response({"detail": "Organization not found or access denied."}, status=404)
@@ -157,7 +157,8 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         membership_id = request.data.get('membership_id')
         payment_method = request.data.get('payment_method')
 
-        if not membership_id: return Response({"error": "Membership ID required."}, status=400)
+        if not membership_id:
+            return Response({"error": "Membership ID required."}, status=400)
 
         try:
             membership = OrgMembership.objects.get(id=membership_id, user=user, organization=organization,
@@ -166,7 +167,8 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return Response({"error": "Pending membership not found."}, status=404)
 
         price = organization.membership_price
-        if price <= 0: return Response({"detail": "Membership is free."}, status=400)
+        if price <= 0:
+            return Response({"detail": "Membership is free."}, status=400)
 
         order = Order.objects.create(user=user, total_amount=price, status='pending', payment_status='unpaid')
         OrderItem.objects.create(order=order, organization=organization, price=price, quantity=1)
@@ -192,7 +194,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             }, status=202)
         else:
             order.status, transaction_payment.status = 'cancelled', 'failed'
-            order.save();
+            order.save()
             transaction_payment.save()
             raise Exception(response.get('message', 'Paystack error.'))
 
@@ -237,12 +239,10 @@ class GuardianLinkViewSet(viewsets.ModelViewSet):
         # 1. Base Logic: Users can ALWAYS see links where they are the parent or student
         queryset = GuardianLink.objects.filter(Q(parent=user) | Q(student=user))
 
-        # 2. Admin Logic: If an Admin is viewing their Organization's dashboard,
-        #    they should be able to see Guardian links for that Organization.
+        # 2. Admin Logic: If an Admin is viewing their Organization's dashboard
         active_org = get_active_org(self.request)
 
         if active_org:
-            # Check if current user is Admin/Owner of this active org
             is_admin = OrgMembership.objects.filter(
                 user=user,
                 organization=active_org,
@@ -251,7 +251,6 @@ class GuardianLinkViewSet(viewsets.ModelViewSet):
             ).exists()
 
             if is_admin:
-                # Add links specific to this organization
                 org_links = GuardianLink.objects.filter(organization=active_org)
                 queryset = (queryset | org_links).distinct()
 
@@ -264,12 +263,14 @@ class OrgTeamViewSet(viewsets.ModelViewSet):
     search_fields = ['user__username', 'user__email']
 
     def get_permissions(self):
-        if self.action in ['list', 'retrieve']: return [IsOrgMember()]
+        if self.action in ['list', 'retrieve']:
+            return [IsOrgMember()]
         return [IsOrgAdminOrOwner()]
 
     def get_queryset(self):
         active_org = getattr(self.request, "active_organization", None)
-        if not active_org: return OrgMembership.objects.none()
+        if not active_org:
+            return OrgMembership.objects.none()
         return OrgMembership.objects.filter(organization=active_org).select_related('user')
 
     @action(detail=False, methods=['post'])
@@ -277,7 +278,8 @@ class OrgTeamViewSet(viewsets.ModelViewSet):
         active_org = getattr(self.request, "active_organization", None)
         email = request.data.get('email')
         role = request.data.get('role', 'tutor')
-        if not email: return Response({"error": "Email is required."}, status=400)
+        if not email:
+            return Response({"error": "Email is required."}, status=400)
 
         try:
             user_to_add = User.objects.get(email=email)
@@ -321,14 +323,26 @@ class OrganizationCreateView(CreateAPIView):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
+        # FIX: We rely on the Serializer to create the Org AND the initial Owner Membership
+        # This prevents the 'IntegrityError' of trying to add the owner twice.
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         organization = serializer.save()
-        OrgMembership.objects.create(user=request.user, organization=organization, role='owner', is_active=True)
-        return Response(OrganizationSerializer(organization).data, status=status.HTTP_201_CREATED)
+
+        # NOTE: OrgMembership creation removed here because OrganizationCreateSerializer handles it.
+
+        # We manually use the OrganizationSerializer for the response
+        # to ensure any 'logo' URL is formatted correctly as absolute.
+        response_serializer = OrganizationSerializer(organization, context={'request': request})
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 
 class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Handles listing and approving join requests.
+    Note: Ideally, these models should be managed in the 'org_community' app views,
+    but they are included here if you prefer a single 'organization' view file.
+    """
     serializer_class = OrgJoinRequestSerializer
     permission_classes = [IsOrgStaff]
 
@@ -342,23 +356,27 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
                     self.request.active_organization = active_org
                 except Organization.DoesNotExist:
                     pass
-        if not active_org: return OrgJoinRequest.objects.none()
+        if not active_org:
+            return OrgJoinRequest.objects.none()
         return OrgJoinRequest.objects.filter(organization=active_org, status="pending").select_related('user')
 
     @action(detail=True, methods=['post'])
     @transaction.atomic
     def approve(self, request, pk=None):
         req = self.get_object()
-        if req.status != 'pending': return Response({"error": "Not pending."}, status=400)
+        if req.status != 'pending':
+            return Response({"error": "Not pending."}, status=400)
 
         if OrgMembership.objects.filter(user=req.user, organization=req.organization).exists():
-            req.status = 'approved';
+            req.status = 'approved'
             req.save()
             return Response({"error": "Already member."}, status=400)
 
         OrgMembership.objects.create(user=req.user, organization=req.organization, role='tutor', is_active=True)
-        req.status = 'approved';
+        req.status = 'approved'
         req.save()
+
+        # Auto-reject any pending invitations if the request is approved
         OrgInvitation.objects.filter(invited_user=req.user, organization=req.organization, status='pending').update(
             status='rejected')
         return Response({"status": "Approved."})
@@ -366,7 +384,7 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
         req = self.get_object()
-        req.status = 'rejected';
+        req.status = 'rejected'
         req.save()
         return Response({"status": "Rejected."})
 
@@ -385,7 +403,8 @@ class OrgSentInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
                     self.request.active_organization = active_org
                 except Organization.DoesNotExist:
                     pass
-        if not active_org: return OrgInvitation.objects.none()
+        if not active_org:
+            return OrgInvitation.objects.none()
         return OrgInvitation.objects.filter(organization=active_org, status="pending").select_related('invited_user',
                                                                                                       'invited_by')
 
@@ -430,12 +449,16 @@ class OrganizationTeamView(APIView):
         active_org = getattr(request, "active_organization", None)
         if not active_org and slug:
             active_org = get_object_or_404(Organization, slug=slug)
-        if not active_org: return Response({"detail": "Not found."}, status=404)
+        if not active_org:
+            return Response({"detail": "Not found."}, status=404)
 
-        memberships = OrgMembership.objects.filter(organization=active_org, is_active=True,
-                                                   role__in=['owner', 'admin', 'tutor']).select_related('user',
-                                                                                                        'user__creator_profile').prefetch_related(
-            'subjects')
+        memberships = OrgMembership.objects.filter(
+            organization=active_org,
+            is_active=True,
+            role__in=['owner', 'admin', 'tutor']
+        ).select_related('user', 'user__creator_profile').prefetch_related('subjects')
+
+        # IMPORTANT: Passing context here ensures images in the nested TeamMemberProfileSerializer are absolute URLs
         serializer = OrgTeamMemberSerializer(memberships, many=True, context={'request': request})
 
         management = [m for m in serializer.data if m['role'] in ['owner', 'admin']]

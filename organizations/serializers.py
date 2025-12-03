@@ -11,10 +11,20 @@ from .models import Organization, OrgMembership, GuardianLink, OrgLevel, OrgCate
 User = get_user_model()
 
 class OrganizationSerializer(serializers.ModelSerializer):
+    logo = serializers.SerializerMethodField()
+
     class Meta:
         model = Organization
         fields = "__all__"
         read_only_fields = ("slug", "approved", "created_at", "updated_at")
+
+    def get_logo(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
 
 class OrgUserSerializer(serializers.ModelSerializer):
@@ -52,10 +62,19 @@ class OrganizationSimpleSerializer(serializers.ModelSerializer):
     """
     Used by OrgCommunity serializers to show the name + LOGO.
     """
+    logo = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
         fields = ['id', 'name', 'slug', 'logo', 'org_type']
+
+    def get_logo(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
 
 class FormDataJSONField(serializers.JSONField):
@@ -82,7 +101,7 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
     branding = FormDataJSONField(required=False)
     policies = FormDataJSONField(required=False)
 
-    logo = serializers.ImageField(required=False, allow_null=True)
+    logo = serializers.SerializerMethodField()
 
     membership_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     membership_period = serializers.ChoiceField(choices=Organization.MEMBERSHIP_PERIODS, required=False)
@@ -101,6 +120,14 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
             'membership_price', 'membership_period', 'membership_duration_value'
         ]
         read_only_fields = ['slug', 'approved', 'created_at', 'updated_at', 'branding', 'policies']
+
+    def get_logo(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
     def get_stats(self, obj):
         return {
@@ -139,6 +166,7 @@ class OrgLevelInputSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, allow_blank=True)
     order = serializers.IntegerField(required=False, default=0)
 
+
 class OrgCategoryInputSerializer(serializers.Serializer):
     """Simple validator for creating categories during org creation"""
     name = serializers.CharField(max_length=100)
@@ -162,6 +190,17 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
             'levels', 'categories', 'slug'
         ]
         read_only_fields = ['slug']
+
+    def to_representation(self, instance):
+        """Ensure absolute URL in response."""
+        ret = super().to_representation(instance)
+        if instance.logo:
+            request = self.context.get('request')
+            if request:
+                ret['logo'] = request.build_absolute_uri(instance.logo.url)
+            else:
+                ret['logo'] = instance.logo.url
+        return ret
 
     def validate_levels(self, value):
         """Ensure the JSON structure for levels is valid"""
@@ -275,13 +314,21 @@ class StudentEnrollmentSerializer(serializers.Serializer):
 
 class OrganizationListSerializer(serializers.ModelSerializer):
     is_member = serializers.SerializerMethodField()
+    logo = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
-        fields = ('slug', 'name', 'org_type', 'description', 'membership_price', 'membership_period', 'is_member')
+        fields = ('slug', 'name', 'org_type', 'logo', 'description', 'membership_price', 'membership_period', 'is_member')
+
+    def get_logo(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
 
     def get_is_member(self, obj):
-        """Checks if the requesting user is already an active member."""
         user = self.context.get('request').user
         if not user or not user.is_authenticated:
             return False
@@ -291,9 +338,19 @@ class OrganizationListSerializer(serializers.ModelSerializer):
 
 
 class TeamMemberProfileSerializer(serializers.ModelSerializer):
+    profile_image = serializers.SerializerMethodField()
+
     class Meta:
         model = CreatorProfile
         fields = ['display_name', 'bio', 'headline', 'profile_image', 'education', 'intro_video']
+
+    def get_profile_image(self, obj):
+        if obj.profile_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.profile_image.url)
+            return obj.profile_image.url
+        return None
 
 
 class OrgCategorySimpleSerializer(serializers.ModelSerializer):
