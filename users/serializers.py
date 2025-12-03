@@ -205,8 +205,6 @@ class StudentProfileSerializer(serializers.ModelSerializer):
     Serializer for writing to the StudentProfile.
     """
     user = serializers.ReadOnlyField(source='user.username')
-    # For writing, ImageField is okay, but usually we prefer consistent response.
-    # We will override to_representation.
     avatar = serializers.ImageField(required=False, allow_null=True)
 
     class Meta:
@@ -222,6 +220,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
+
         if instance.avatar:
             request = self.context.get('request')
             if request:
@@ -229,6 +228,9 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             else:
                 ret['avatar'] = instance.avatar.url
         return ret
+
+    def update(self, instance, validated_data):
+        return super().update(instance, validated_data)
 
 
 class StudentProfileReadSerializer(serializers.ModelSerializer):

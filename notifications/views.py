@@ -40,12 +40,10 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     def mark_read(self, request, pk=None):
         notification = self.get_object()
 
-        if not notification.is_read:
-            notification.is_read = True
-            notification.read_at = timezone.now()
-            notification.save(update_fields=['is_read', 'read_at'])
-
+        try:
             push_unread_count_update(request.user)
+        except Exception as e:
+            pass
 
         return Response({'status': 'marked as read'})
 

@@ -747,23 +747,22 @@ class TutorRevenueView(APIView):
         user = request.user
         active_org = getattr(request, "active_organization", None)
 
+        wallet_filter = {}
+        context_label = "Personal Finance"
+
         if active_org:
              membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
              if membership and membership.role in ["admin", "owner"]:
-                 wallet = getattr(active_org, "wallet", None)
+                 wallet_filter['owner_org'] = active_org
                  context_label = "Organization Finance"
              else:
-                 wallet = getattr(user, "wallet", None)
+                 wallet_filter['owner_user'] = user
                  context_label = "Personal Finance"
         else:
-            wallet = getattr(user, "wallet", None)
+            wallet_filter['owner_user'] = user
             context_label = "Personal Finance"
 
-        if not wallet:
-            if context_label == "Organization Finance":
-                 wallet = Wallet.objects.create(owner_org=active_org)
-            else:
-                 wallet = Wallet.objects.create(owner_user=user)
+        wallet, created = Wallet.objects.get_or_create(**wallet_filter)
 
         transactions = Transaction.objects.filter(wallet=wallet).order_by('-created_at')[:20]
         payouts = Payout.objects.filter(wallet=wallet).order_by('-created_at')[:10]
