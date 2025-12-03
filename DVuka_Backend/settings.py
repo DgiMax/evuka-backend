@@ -155,28 +155,40 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Static & Media (MinIO / S3)
 # ---------------------------------------
 # Even for testing, if you set USE_S3=true in .env, this works.
-USE_S3 = os.getenv("USE_S3", "False").lower() == "true"
+# USE_S3 = os.getenv("USE_S3", "False").lower() == "true"
+#
+# if USE_S3:
+#     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+#     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+#     AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
+#     AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
+#     AWS_STATIC_BUCKET_NAME = os.getenv("AWS_STATIC_BUCKET_NAME")
+#     AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
+#     AWS_S3_USE_SSL = os.getenv("AWS_S3_USE_SSL", "True").lower() == "true"
+#
+#     DEFAULT_FILE_STORAGE = "DVuka_Backend.storages.MediaStorage"
+#     STATICFILES_STORAGE = "DVuka_Backend.storages.StaticStorage"
+#
+#     MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
+#     # STATIC_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STATIC_BUCKET_NAME}/"
+#
+#     STATIC_URL = '/static/'
+#     STATIC_ROOT = BASE_DIR / "staticfiles"
+# else:
+#     STATIC_URL = '/static/'
+#     MEDIA_URL = '/media/'
 
-if USE_S3:
-    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-    AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
-    AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
-    AWS_STATIC_BUCKET_NAME = os.getenv("AWS_STATIC_BUCKET_NAME")
-    AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
-    AWS_S3_USE_SSL = os.getenv("AWS_S3_USE_SSL", "True").lower() == "true"
 
-    DEFAULT_FILE_STORAGE = "DVuka_Backend.storages.MediaStorage"
-    STATICFILES_STORAGE = "DVuka_Backend.storages.StaticStorage"
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
-    MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
-    # STATIC_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STATIC_BUCKET_NAME}/"
+MEDIA_URL = '/media/'
 
-    STATIC_URL = '/static/'
-    STATIC_ROOT = BASE_DIR / "staticfiles"
-else:
-    STATIC_URL = '/static/'
-    MEDIA_URL = '/media/'
+MEDIA_ROOT = (
+    BASE_DIR / 'media_volume' / 'media'
+    if (BASE_DIR / 'media_volume').exists()
+    else BASE_DIR / 'media'
+)
 
 
 # ---------------------------------------
