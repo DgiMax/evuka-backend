@@ -72,9 +72,15 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return OrganizationCreateSerializer
         if self.action == 'list':
             return OrganizationListSerializer
-        if self.action in ['retrieve', 'current']:
+        if self.action in ['retrieve', 'current', 'details_view']:
             return OrganizationDetailSerializer
         return self.serializer_class
+
+    @action(detail=True, methods=['get'], url_path='details')
+    def details_view(self, request, slug=None):
+        org = self.get_object()
+        serializer = self.get_serializer(org)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['get', 'patch'], permission_classes=[permissions.IsAuthenticated])
     def current(self, request):
