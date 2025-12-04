@@ -885,7 +885,7 @@ class ModuleAtomicSerializer(serializers.ModelSerializer):
 class LessonCreateAtomicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lesson
-        fields = ("id", "module", "title", "video_file", "order")
+        fields = ("id", "module", "title", "content", "video_file", "order")
         read_only_fields = ("module",)
 
 class CourseAssignmentAtomicSerializer(serializers.ModelSerializer):
