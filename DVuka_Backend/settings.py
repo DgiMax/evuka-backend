@@ -187,7 +187,7 @@ if USE_S3:
     # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
-            "BACKEND": "django_bunny_storage.storage.BunnyCDNStorage",
+            "BACKEND": "django_bunny_storage.storage.BunnyStorage",
             "OPTIONS": {
                 "base_url": BUNNY_URL,
             },
