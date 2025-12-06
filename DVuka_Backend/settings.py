@@ -172,6 +172,7 @@ USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 BUNNY_USERNAME = os.environ.get('AWS_ACCESS_KEY_ID')
 BUNNY_PASSWORD = os.environ.get('AWS_SECRET_ACCESS_KEY')
 BUNNY_REGION = os.environ.get('BUNNY_REGION', 'uk')
+BUNNY_PULL_ZONE_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
 
 if USE_S3:
     # --- STATIC FILES (Keep Local for Admin Speed) ---
