@@ -163,12 +163,15 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ------------------------------------------------
-# 2. FILE STORAGE (Bunny.net / S3)
-# ------------------------------------------------
-# ------------------------------------------------
 # 2. FILE STORAGE (Bunny.net Native)
 # ------------------------------------------------
 USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
+
+# --- DEFINE THESE GLOBALLY (Critical Fix) ---
+# The library looks for these in global settings, not inside the conditional block.
+BUNNY_USERNAME = os.environ.get('BUNNY_STORAGE_ZONE')
+BUNNY_PASSWORD = os.environ.get('BUNNY_API_KEY')
+BUNNY_REGION = os.environ.get('BUNNY_REGION', 'de')
 
 if USE_S3:
     # --- STATIC FILES (Keep Local for Admin Speed) ---
@@ -176,18 +179,11 @@ if USE_S3:
     STATIC_ROOT = BASE_DIR / "staticfiles"
 
     # --- MEDIA FILES (Bunny.net) ---
-    # We load the library specific settings
-    BUNNY_STORAGE_ZONE = os.environ.get('BUNNY_STORAGE_ZONE')
-    BUNNY_API_KEY = os.environ.get('BUNNY_API_KEY')
-    BUNNY_REGION = os.environ.get('BUNNY_REGION', 'uk')  # defaults to 'de' (Germany/Global)
-
-    # Base URL for the files (Your Pull Zone)
-    BUNNY_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
-
     # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
             "BACKEND": "django_bunny_storage.storage.BunnyStorage",
+            # No OPTIONS block needed here; it reads the Global BUNNY_* vars above
         },
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
@@ -195,7 +191,9 @@ if USE_S3:
     }
 
     # Set the MEDIA_URL so Django knows how to display images
+    BUNNY_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
     if BUNNY_URL:
+        # Ensure it ends with a slash
         MEDIA_URL = f"{BUNNY_URL}/" if not BUNNY_URL.endswith("/") else BUNNY_URL
     else:
         MEDIA_URL = '/media/'
@@ -215,6 +213,7 @@ else:
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
+
 # ---------------------------------------
 # REST & JWT
 # ---------------------------------------
