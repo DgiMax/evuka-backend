@@ -90,22 +90,29 @@ TEMPLATES = [
 WSGI_APPLICATION = 'DVuka_Backend.wsgi.application'
 ASGI_APPLICATION = "DVuka_Backend.asgi.application"
 
-# ---------------------------------------
-# Database (Strictly SQLite as requested)
-# ---------------------------------------
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db_volume' / 'db.sqlite3' if (BASE_DIR / 'db_volume').exists() else BASE_DIR / 'db.sqlite3',
+# ------------------------------------------------
+# 1. DATABASE CONFIGURATION
+# ------------------------------------------------
+# If POSTGRES_DB is set in .env, use PostgreSQL. Otherwise, use SQLite (Local).
+if os.environ.get('POSTGRES_DB'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('POSTGRES_DB'),
+            'USER': os.environ.get('POSTGRES_USER'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
+            'HOST': os.environ.get('POSTGRES_HOST'),
+            'PORT': os.environ.get('POSTGRES_PORT'),
+        }
     }
-}
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
+else:
+    # Fallback to SQLite for local testing if no Postgres config is found
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # ---------------------------------------
@@ -128,9 +135,6 @@ else:
         "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
     }
 
-# CHANNEL_LAYERS = {
-#     "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
-# }
 
 # ---------------------------------------
 # Auth
@@ -158,47 +162,61 @@ USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ---------------------------------------
-# Static & Media (MinIO / S3)
-# ---------------------------------------
-# Even for testing, if you set USE_S3=true in .env, this works.
-# USE_S3 = os.getenv("USE_S3", "False").lower() == "true"
-#
-# if USE_S3:
-#     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-#     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-#     AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL")
-#     AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME")
-#     AWS_STATIC_BUCKET_NAME = os.getenv("AWS_STATIC_BUCKET_NAME")
-#     AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
-#     AWS_S3_USE_SSL = os.getenv("AWS_S3_USE_SSL", "True").lower() == "true"
-#
-#     DEFAULT_FILE_STORAGE = "DVuka_Backend.storages.MediaStorage"
-#     STATICFILES_STORAGE = "DVuka_Backend.storages.StaticStorage"
-#
-#     MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/"
-#     # STATIC_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STATIC_BUCKET_NAME}/"
-#
-#     STATIC_URL = '/static/'
-#     STATIC_ROOT = BASE_DIR / "staticfiles"
-# else:
-#     STATIC_URL = '/static/'
-#     MEDIA_URL = '/media/'
+# 2. FILE STORAGE (Bunny.net / S3)
+# ------------------------------------------------
+# If USE_S3 is True in .env, use Bunny.net. Otherwise, use local files.
+USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 
+if USE_S3:
+    # AWS_... settings work for Bunny.net too because it is S3 Compatible
+    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME')
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')  # e.g. https://sg.storage.bunnycdn.com
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')  # Bunny ignores this, but Django needs it
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN')  # e.g. cdn.e-vuka.com (Optional)
 
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / "staticfiles"
+    # Performance settings
+    AWS_S3_OBJECT_PARAMETERS = {
+        'CacheControl': 'max-age=86400',
+    }
 
-DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
+    # Static & Media Storage Configuration
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "OPTIONS": {
+                "location": "media",  # Store in 'media' folder on Bunny
+                "default_acl": "public-read",
+            },
+        },
+        "staticfiles": {
+            # We keep static files LOCAL on the server for speed/simplicity with Nginx
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
 
-MEDIA_URL = '/media/'
+    # URLs
+    if AWS_S3_CUSTOM_DOMAIN:
+        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/media/"
+    else:
+        MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/media/"
 
-MEDIA_ROOT = (
-    BASE_DIR / 'media_volume' / 'media'
-    if (BASE_DIR / 'media_volume').exists()
-    else BASE_DIR / 'media'
-)
+else:
+    # Local Development Settings
+    STATIC_URL = '/static/'
+    MEDIA_URL = '/media/'
+    STATIC_ROOT = BASE_DIR / "staticfiles"
+    MEDIA_ROOT = BASE_DIR / "media"
 
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
 
 # ---------------------------------------
 # REST & JWT
