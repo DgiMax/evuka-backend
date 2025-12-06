@@ -179,7 +179,7 @@ if USE_S3:
     # We load the library specific settings
     BUNNY_STORAGE_ZONE = os.environ.get('BUNNY_STORAGE_ZONE')
     BUNNY_API_KEY = os.environ.get('BUNNY_API_KEY')
-    BUNNY_REGION = os.environ.get('BUNNY_REGION', 'de')  # defaults to 'de' (Germany/Global)
+    BUNNY_REGION = os.environ.get('BUNNY_REGION', 'uk')  # defaults to 'de' (Germany/Global)
 
     # Base URL for the files (Your Pull Zone)
     BUNNY_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
@@ -188,9 +188,6 @@ if USE_S3:
     STORAGES = {
         "default": {
             "BACKEND": "django_bunny_storage.storage.BunnyStorage",
-            "OPTIONS": {
-                "base_url": BUNNY_URL,
-            },
         },
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
@@ -199,7 +196,7 @@ if USE_S3:
 
     # Set the MEDIA_URL so Django knows how to display images
     if BUNNY_URL:
-        MEDIA_URL = f"{BUNNY_URL}/"
+        MEDIA_URL = f"{BUNNY_URL}/" if not BUNNY_URL.endswith("/") else BUNNY_URL
     else:
         MEDIA_URL = '/media/'
 
