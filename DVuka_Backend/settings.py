@@ -169,9 +169,9 @@ USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 
 # --- DEFINE THESE GLOBALLY (Critical Fix) ---
 # The library looks for these in global settings, not inside the conditional block.
-BUNNY_USERNAME = os.environ.get('BUNNY_STORAGE_ZONE')
+BUNNY_USERNAME = os.environ.get('AWS_ACCESS_KEY_ID')
 BUNNY_PASSWORD = os.environ.get('BUNNY_API_KEY')
-BUNNY_REGION = os.environ.get('BUNNY_REGION', 'de')
+BUNNY_REGION = os.environ.get('BUNNY_REGION', 'uk')
 
 if USE_S3:
     # --- STATIC FILES (Keep Local for Admin Speed) ---
