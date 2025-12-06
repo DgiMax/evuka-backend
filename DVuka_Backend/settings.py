@@ -182,8 +182,7 @@ if USE_S3:
     # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
-            "BACKEND": "django_bunny_storage.storage.BunnyStorage",
-            # No OPTIONS block needed here; it reads the Global BUNNY_* vars above
+            "BACKEND": "core.custom_storage.ConnectedBunnyStorage",
         },
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
