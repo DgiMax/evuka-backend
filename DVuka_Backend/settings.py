@@ -162,41 +162,43 @@ USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# ------------------------------------------------
 # 2. FILE STORAGE (Bunny.net / S3)
 # ------------------------------------------------
-# If USE_S3 is True in .env, use Bunny.net. Otherwise, use local files.
 USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 
 if USE_S3:
-    # AWS_... settings work for Bunny.net too because it is S3 Compatible
+    # --- ADD THESE MISSING LINES ---
+    # Even with S3 enabled for Media, we MUST define Static paths
+    STATIC_URL = '/static/'
+    STATIC_ROOT = BASE_DIR / "staticfiles"
+    # -------------------------------
+
+    # AWS / Bunny.net Settings
     AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
     AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME')
-    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')  # e.g. https://sg.storage.bunnycdn.com
-    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')  # Bunny ignores this, but Django needs it
-    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN')  # e.g. cdn.e-vuka.com (Optional)
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN')
 
-    # Performance settings
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
     }
 
-    # Static & Media Storage Configuration
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
             "OPTIONS": {
-                "location": "media",  # Store in 'media' folder on Bunny
+                "location": "media",
                 "default_acl": "public-read",
             },
         },
         "staticfiles": {
-            # We keep static files LOCAL on the server for speed/simplicity with Nginx
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
 
-    # URLs
     if AWS_S3_CUSTOM_DOMAIN:
         MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/media/"
     else:
