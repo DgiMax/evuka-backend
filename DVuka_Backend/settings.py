@@ -181,6 +181,7 @@ if USE_S3:
     AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')
     AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
     AWS_S3_ADDRESSING_STYLE = "path"
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
     AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN')
 
     AWS_S3_OBJECT_PARAMETERS = {
@@ -192,7 +193,8 @@ if USE_S3:
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
             "OPTIONS": {
                 "location": "media",
-                "default_acl": "public-read",
+                "default_acl": None,
+                "querystring_auth": False,
             },
         },
         "staticfiles": {
