@@ -165,36 +165,31 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ------------------------------------------------
 # 2. FILE STORAGE (Bunny.net / S3)
 # ------------------------------------------------
+# ------------------------------------------------
+# 2. FILE STORAGE (Bunny.net Native)
+# ------------------------------------------------
 USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 
 if USE_S3:
-    # --- ADD THESE MISSING LINES ---
-    # Even with S3 enabled for Media, we MUST define Static paths
+    # --- STATIC FILES (Keep Local for Admin Speed) ---
     STATIC_URL = '/static/'
     STATIC_ROOT = BASE_DIR / "staticfiles"
-    # -------------------------------
 
-    # AWS / Bunny.net Settings
-    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID')
-    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY')
-    AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME')
-    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL')
-    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'us-east-1')
-    AWS_S3_ADDRESSING_STYLE = "path"
-    AWS_S3_SIGNATURE_VERSION = "s3v4"
-    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN')
+    # --- MEDIA FILES (Bunny.net) ---
+    # We load the library specific settings
+    BUNNY_STORAGE_ZONE = os.environ.get('BUNNY_STORAGE_ZONE')
+    BUNNY_API_KEY = os.environ.get('BUNNY_API_KEY')
+    BUNNY_REGION = os.environ.get('BUNNY_REGION', 'de')  # defaults to 'de' (Germany/Global)
 
-    AWS_S3_OBJECT_PARAMETERS = {
-        'CacheControl': 'max-age=86400',
-    }
+    # Base URL for the files (Your Pull Zone)
+    BUNNY_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
 
+    # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
-            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "BACKEND": "django_bunny_storage.storage.BunnyCDNStorage",
             "OPTIONS": {
-                "location": "media",
-                "default_acl": None,
-                "querystring_auth": False,
+                "base_url": BUNNY_URL,
             },
         },
         "staticfiles": {
@@ -202,13 +197,14 @@ if USE_S3:
         },
     }
 
-    if AWS_S3_CUSTOM_DOMAIN:
-        MEDIA_URL = f"https://{AWS_S3_CUSTOM_DOMAIN}/media/"
+    # Set the MEDIA_URL so Django knows how to display images
+    if BUNNY_URL:
+        MEDIA_URL = f"{BUNNY_URL}/"
     else:
-        MEDIA_URL = f"{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/media/"
+        MEDIA_URL = '/media/'
 
 else:
-    # Local Development Settings
+    # --- LOCAL DEVELOPMENT ---
     STATIC_URL = '/static/'
     MEDIA_URL = '/media/'
     STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -222,7 +218,6 @@ else:
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
-
 # ---------------------------------------
 # REST & JWT
 # ---------------------------------------
