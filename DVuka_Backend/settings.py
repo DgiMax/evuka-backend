@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'live',
     'org_community',
     'ai_assistant',
+    'help_center'
 ]
 
 # ---------------------------------------
@@ -117,13 +118,19 @@ if REDIS_HOST:
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
-            "CONFIG": {"hosts": [(REDIS_HOST, 6379)]},
+            "CONFIG": {
+                "hosts": [(REDIS_HOST, 6379)]
+            },
         },
     }
 else:
     CHANNEL_LAYERS = {
         "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
     }
+
+# CHANNEL_LAYERS = {
+#     "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
+# }
 
 # ---------------------------------------
 # Auth
@@ -146,7 +153,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Localization
 # ---------------------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Africa/Nairobi'
 USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

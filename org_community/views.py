@@ -46,15 +46,20 @@ class RequestToJoinView(generics.CreateAPIView):
         serializer.save(user=self.request.user)
 
 
-class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
+class OrgJoinRequestViewSet(viewsets.ModelViewSet):
     """
-    Admins can list, approve, or reject pending join requests.
-    Tutors can VIEW the list (Read Only).
+    Manages Join Requests for an Organization.
+    - LIST: See all pending requests (Admins/Staff).
+    - APPROVE/REJECT: Take action (Admins/Owners only).
     """
     serializer_class = OrgJoinRequestSerializer
-    permission_classes = [IsOrgStaff]  # Tutors get Read-only access
+    # Base permission: You must be at least staff (tutor) to see the list.
+    # Specific actions (approve/reject) will check for Admin/Owner status inside the method if needed,
+    # or you can enforce IsOrgAdminOrOwner for the whole viewset if Tutors shouldn't see requests.
+    permission_classes = [IsOrgStaff]
 
     def get_queryset(self):
+        # 1. Get the active organization from context (Middleware or Header)
         active_org = getattr(self.request, "active_organization", None)
 
         if not active_org:
@@ -69,15 +74,18 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
         if not active_org:
             return OrgJoinRequest.objects.none()
 
+        # 2. Return pending requests for that org
         return OrgJoinRequest.objects.filter(
             organization=active_org,
             status="pending"
         ).select_related('user')
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
     @transaction.atomic
     def approve(self, request, pk=None):
-        # IsOrgStaff ensures only Admins reach here (POST)
+        """
+        Approve a user's request to join.
+        """
         req = self.get_object()
         if req.status != 'pending':
             return Response({"error": "Request not pending."}, status=status.HTTP_400_BAD_REQUEST)
@@ -87,15 +95,17 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
             req.save()
             return Response({"error": "User is already a member."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Create Membership
         OrgMembership.objects.create(
             user=req.user,
             organization=req.organization,
-            role='tutor',
+            role='tutor', # Default role for requests via this channel
             is_active=True
         )
         req.status = 'approved'
         req.save()
 
+        # Clean up any invitations that might exist for this user
         OrgInvitation.objects.filter(
             invited_user=req.user,
             organization=req.organization,
@@ -104,7 +114,7 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
         return Response({"status": "Request approved, user added as tutor."})
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
     def reject(self, request, pk=None):
         req = self.get_object()
         if req.status != 'pending':
@@ -115,13 +125,14 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({"status": "Request rejected."})
 
 
-class OrgSentInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
+class OrgSentInvitationsViewSet(viewsets.ModelViewSet):
     """
-    Admins can list and revoke sent invitations.
-    Tutors can VIEW the list (Read Only).
+    Manages Invitations sent BY the Organization.
+    - LIST: See pending invitations.
+    - REVOKE: Cancel an invitation.
     """
     serializer_class = OrgAdminInvitationSerializer
-    permission_classes = [IsOrgStaff]  # Tutors get Read-only access
+    permission_classes = [IsOrgStaff] # Tutors can see who is invited
 
     def get_queryset(self):
         active_org = getattr(self.request, "active_organization", None)
@@ -143,12 +154,13 @@ class OrgSentInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
             status="pending"
         ).select_related('invited_user')
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
     def revoke(self, request, pk=None):
         inv = self.get_object()
         if inv.status != 'pending':
             return Response({"error": "Invitation not pending."}, status=400)
-        inv.delete()
+        inv.status = 'revoked'
+        inv.save()
         return Response({"status": "Invitation revoked"})
 
 

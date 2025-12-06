@@ -148,7 +148,6 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             "is_enrolled", "modules", "status", "created_at", "updated_at",
             "live_classes",
         )
-        # Note: Added 'slug' to read_only_fields here for clarity (not mandatory)
 
     def to_representation(self, instance):
         """Pass context to nested serializers."""
@@ -394,12 +393,74 @@ class QuestionCreateUpdateSerializer(serializers.ModelSerializer):
 
 
 class QuizCreateUpdateSerializer(serializers.ModelSerializer):
+    """
+    Used for the Full Quiz Editor in Tutor Dashboard.
+    Handles nested creation/update of Questions -> Options.
+    """
     id = serializers.IntegerField(required=False)
-    questions = QuestionCreateUpdateSerializer(many=True)
+    questions = QuestionCreateUpdateSerializer(many=True, required=False)
 
     class Meta:
         model = Quiz
         fields = ('id', 'title', 'description', 'order', 'max_score', 'time_limit_minutes', 'max_attempts', 'questions')
+
+    def create(self, validated_data):
+        """
+        Handles creating a Quiz with nested Questions and Options.
+        """
+        questions_data = validated_data.pop('questions', [])
+        quiz = Quiz.objects.create(**validated_data)
+
+        for q_data in questions_data:
+            options_data = q_data.pop('options', [])
+            question = Question.objects.create(quiz=quiz, **q_data)
+
+            for o_data in options_data:
+                Option.objects.create(question=question, **o_data)
+
+        return quiz
+
+    def update(self, instance, validated_data):
+        questions_data = validated_data.pop('questions', [])
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if questions_data is not None:
+            keep_question_ids = []
+
+            for q_data in questions_data:
+                options_data = q_data.pop('options', [])
+                q_id = q_data.get('id')
+
+                if q_id:
+                    question = Question.objects.get(id=q_id, quiz=instance)
+                    for q_attr, q_val in q_data.items():
+                        setattr(question, q_attr, q_val)
+                    question.save()
+                else:
+                    question = Question.objects.create(quiz=instance, **q_data)
+
+                keep_question_ids.append(question.id)
+
+                keep_option_ids = []
+                for o_data in options_data:
+                    o_id = o_data.get('id')
+                    if o_id:
+                        option = Option.objects.get(id=o_id, question=question)
+                        for o_attr, o_val in o_data.items():
+                            setattr(option, o_attr, o_val)
+                        option.save()
+                    else:
+                        option = Option.objects.create(question=question, **o_data)
+                    keep_option_ids.append(option.id)
+
+                question.options.exclude(id__in=keep_option_ids).delete()
+
+            instance.questions.exclude(id__in=keep_question_ids).delete()
+
+        return instance
 
 
 class CourseAssignmentCreateUpdateSerializer(serializers.ModelSerializer):
@@ -415,7 +476,7 @@ class LessonCreateUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lesson
-        fields = ("title", "video_file", "quizzes")
+        fields = ("title", "content", "video_file", "quizzes")
 
 
 class ModuleCreateUpdateSerializer(serializers.ModelSerializer):
@@ -434,7 +495,7 @@ class LessonTutorDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Lesson
-        fields = ('id', 'title', 'video_file', 'quizzes')
+        fields = ('id', 'title', 'content', 'video_file', 'quizzes')
 
     def get_video_file(self, obj):
         if obj.video_file:
@@ -473,14 +534,10 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
             "thumbnail",
             "promo_video",
             "price", "status", "slug",
-            "modules",
+            "modules", "is_public"
         )
 
     def get_global_category(self, obj):
-        """
-        This adds the parent category ID to the API response,
-        which is missing because it's not saved on the Course model.
-        """
         if obj.global_subcategory:
             return obj.global_subcategory.category_id
         return None
@@ -506,6 +563,7 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
     global_category = serializers.PrimaryKeyRelatedField(
         queryset=GlobalCategory.objects.all(), write_only=True, required=False
     )
+    is_public = serializers.BooleanField(required=False)
 
     class Meta:
         model = Course
@@ -515,7 +573,7 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             "global_subcategory", "global_level",
             "global_category",
             "org_category", "org_level", "thumbnail", "promo_video",
-            "price", "status", "is_published", "modules",
+            "price", "status", "is_public", "modules",
         )
 
     def _parse_json_field(self, value, field_name):
@@ -528,10 +586,8 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
 
     def validate_modules(self, value):
         modules_data = self._parse_json_field(value, "modules")
-
         if not isinstance(modules_data, list):
             raise serializers.ValidationError("Modules must be a list.")
-
         return modules_data
 
     def validate_learning_objectives(self, value):
@@ -584,10 +640,6 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
         return data
 
     def _create_modules(self, course, modules_data, request):
-        """
-        Helper to create modules, lessons, quizzes, questions, options, and assignments.
-        This logic assumes a destructive update (delete all old content, recreate new).
-        """
         request_files = request.FILES
 
         for module_data in modules_data:
@@ -638,8 +690,6 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             obj["value"] for obj in objectives_data if obj.get("value")
         ]
 
-        validated_data["is_published"] = validated_data.get("status") == "published"
-
         request = self.context.get('request')
         if not request:
             raise serializers.ValidationError("Serializer requires request in context.")
@@ -669,7 +719,6 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             instance.modules.all().delete()
             self._create_modules(instance, modules_data, request)
 
-        instance.is_published = instance.status == "published"
         instance.save()
 
         return instance
@@ -687,9 +736,9 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             "title": instance.title,
             "slug": instance.slug,
             "status": instance.status,
-            "is_published": instance.is_published,
             "price": instance.price,
             "thumbnail_url": thumbnail_url,
+            "is_public": instance.is_public
         }
 
 
@@ -915,10 +964,6 @@ class EnrollmentManagerSerializer(serializers.ModelSerializer):
 
 
 class CourseManagementDashboardSerializer(serializers.ModelSerializer):
-    """
-    The main serializer for the 'all-in-one' management page.
-    Fetches all nested data required for all dashboard tabs, including Settings.
-    """
     modules = ModuleTutorDetailSerializer(many=True, read_only=True)
     assignments_summary = serializers.SerializerMethodField()
     quizzes_summary = serializers.SerializerMethodField()
@@ -950,10 +995,10 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
             "quizzes_summary",
             "enrollments",
             "live_classes",
+            "is_public"
         )
 
     def get_thumbnail(self, obj):
-        """ Returns the full URL for the thumbnail """
         if obj.thumbnail:
             request = self.context.get('request')
             if request:
@@ -965,7 +1010,6 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
         return obj.global_subcategory.category_id if obj.global_subcategory else None
 
     def get_assignments_summary(self, obj):
-        """Calculates total and pending submissions for all assignments."""
         assignments = CourseAssignment.objects.filter(module__course=obj)
         summary = []
         for assignment in assignments:
@@ -981,7 +1025,6 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
         return summary
 
     def get_quizzes_summary(self, obj):
-        """Calculates total and review-required attempts for all quizzes."""
         quizzes = Quiz.objects.filter(lesson__module__course=obj)
         summary = []
         for quiz in quizzes:

@@ -3,7 +3,6 @@ from .models import Payment, Refund
 
 
 class RefundInline(admin.TabularInline):
-    """Show refunds directly under each payment in admin."""
     model = Refund
     extra = 0
     readonly_fields = ("amount", "reason", "status", "requested_by_user", "created_at", "processed_at")
@@ -13,10 +12,8 @@ class RefundInline(admin.TabularInline):
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
     list_display = (
-        "id", "order", "user",
-        "provider", "payment_method",
-        "amount", "currency", "status",
-        "transaction_id", "reference_code", "created_at",
+        "id", "order", "user", "provider", "payment_method",
+        "amount", "status", "transaction_id", "created_at",
     )
     list_filter = ("provider", "payment_method", "status", "created_at")
     search_fields = (
@@ -30,7 +27,6 @@ class PaymentAdmin(admin.ModelAdmin):
         "reference_code", "transaction_id", "metadata",
         "created_at", "updated_at",
     )
-    autocomplete_fields = ("order", "user")
     inlines = [RefundInline]
 
 
@@ -47,4 +43,4 @@ class RefundAdmin(admin.ModelAdmin):
         "reason",
     )
     readonly_fields = ("created_at", "processed_at")
-    autocomplete_fields = ("payment",)
+

@@ -112,7 +112,7 @@ class Course(models.Model):
         ("draft", "Draft"),
         ("pending_review", "Pending Review"),
         ("published", "Published"),
-        ("archived", "ArchIVED"),
+        ("archived", "Archived"),
     ]
 
     title = models.CharField(max_length=255)
@@ -124,7 +124,7 @@ class Course(models.Model):
     learning_objectives = models.JSONField(default=list, blank=True, help_text="List of course objectives")
 
     thumbnail = models.ImageField(upload_to='course_thumbnails/', blank=True, null=True)
-    promo_video = models.FileField(upload_to='course_promo_videos/', blank=True, null=True)
+    promo_video = models.URLField(max_length=500, blank=True, null=True, help_text="YouTube or Vimeo link")
 
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -190,7 +190,6 @@ class Course(models.Model):
     )
 
     price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
-    is_published = models.BooleanField(default=False)
     is_public = models.BooleanField(
         default=False,
         help_text="If True, course is visible outside the organization's portal (in the main marketplace). Only relevant for organization courses."
@@ -216,10 +215,13 @@ class Course(models.Model):
         # Infer course type based on organization
         self.course_type = "organization" if self.organization else "independent"
 
+        if self.course_type == "independent":
+            self.is_public = True
+
         if self.course_type == "organization":
             if not self.org_category or not self.org_level:
                 raise ValueError("Organization courses must have OrgCategory and OrgLevel.")
-            if self.is_published and (not self.global_subcategory or not self.global_level):
+            if (self.status == "published") and (not self.global_subcategory or not self.global_level):
                 raise ValueError("Published organization courses must have GlobalSubCategory and GlobalLevel.")
         elif self.course_type == "independent":
             if not self.global_subcategory or not self.global_level:
@@ -227,19 +229,14 @@ class Course(models.Model):
             self.org_category = None
             self.org_level = None
 
-        # Sync is_published with status
-        self.is_published = self.status == "published"
-
         super().save(*args, **kwargs)
 
     def publish(self):
         self.status = "published"
-        self.is_published = True
         self.save()
 
     def archive(self):
         self.status = "archived"
-        self.is_published = False
         self.save()
 
 

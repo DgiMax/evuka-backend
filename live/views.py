@@ -10,7 +10,8 @@ from django.db import transaction
 from courses.views import TutorCourseViewSet
 from organizations.models import OrgMembership
 from .models import LiveClass, LiveLesson
-from .serializers import LiveClassSerializer, LiveLessonSerializer, CourseWithLiveClassesSerializer
+from .serializers import LiveClassSerializer, LiveLessonSerializer, CourseWithLiveClassesSerializer, \
+    LiveLessonCreateSerializer
 from .permissions import IsTutorOrOrgAdmin
 from .utils.jitsi_token import generate_jitsi_token
 from django.conf import settings
@@ -53,8 +54,12 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             organization=active_org,
             creator_profile=getattr(user, "creator_profile", None),
         )
+
         if instance.recurrence_type == "weekly" and instance.recurrence_days:
             instance.generate_lessons_batch(start_from=instance.start_date, days_ahead=30)
+
+        elif instance.recurrence_type == "none":
+            self._generate_one_time_lesson(instance)
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -79,20 +84,29 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
     def _generate_one_time_lesson(self, live_class):
         """Generates exactly one lesson for a non-recurring LiveClass."""
-        if not live_class.recurrence_days:
-            return
+        # Even for one-time, we expect the frontend to send the time in recurrence_days
+        # e.g., recurrence_days = {"Monday": "14:00"} or just a simple dict {"time": "14:00"}
+        # Depending on your frontend implementation.
 
+        # If your frontend sends {"Monday": "10:00"} matching the start_date weekday:
         start_date = live_class.start_date
         weekday = calendar.day_name[start_date.weekday()]
-
         time_str = live_class.recurrence_days.get(weekday)
 
+        if not time_str:
+            time_str = live_class.recurrence_days.get('time')
+
         if time_str:
-            self._generate_lesson_instance(
-                live_class,
-                start_date,
-                time_str,
-                "One-Time Session"
+            start_time = datetime.strptime(time_str, "%H:%M").time()
+            end_time = (datetime.combine(date.today(), start_time) +
+                        timedelta(minutes=live_class.lesson_duration)).time()
+
+            LiveLesson.objects.create(
+                live_class=live_class,
+                title=f"{live_class.title}",
+                date=start_date,
+                start_time=start_time,
+                end_time=end_time
             )
 
     def _generate_lessons(self, live_class, start_date=None):
@@ -178,6 +192,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
 
 class LiveLessonViewSet(
+    mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
     mixins.UpdateModelMixin,
     mixins.ListModelMixin,
@@ -185,8 +200,12 @@ class LiveLessonViewSet(
     viewsets.GenericViewSet,
 ):
     queryset = LiveLesson.objects.select_related("live_class")
-    serializer_class = LiveLessonSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return LiveLessonCreateSerializer
+        return LiveLessonSerializer
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -194,7 +213,7 @@ class LiveLessonViewSet(
         return context
 
     def get_permissions(self):
-        if self.action in ["update", "partial_update", "destroy"]:
+        if self.action in ["create", "update", "partial_update", "destroy"]:
             self.permission_classes = [permissions.IsAuthenticated, IsTutorOrOrgAdmin]
         else:
             self.permission_classes = [permissions.IsAuthenticated]

@@ -23,6 +23,7 @@ urlpatterns = [
     path('community/', include('org_community.urls')),
     path("ai/", include("ai_assistant.urls")),
     path('notifications/', include('notifications.urls')),
+    path('help_center/', include('help_center.urls')),
     path(
         'best-upcoming-events/',
         BestUpcomingEventView.as_view(),

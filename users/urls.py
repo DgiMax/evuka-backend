@@ -14,7 +14,7 @@ from .views import (
     DashboardAPIView,
     CreatorProfileManageView,
     StudentProfileManageView, TutorDashboardView, TutorRevenueView, TutorAnalyticsView,
-    PublicTutorViewSet, GetWebSocketTokenView, NewsletterSubscribeView, GoogleLoginView,
+    PublicTutorViewSet, GetWebSocketTokenView, NewsletterSubscribeView, GoogleLoginView, PublicTutorProfileView,
 )
 
 app_name = "users"
@@ -49,6 +49,7 @@ urlpatterns = [
     path('dashboard/analytics/', TutorAnalyticsView.as_view(), name='tutor-analytics'),
     path('ws-token/', GetWebSocketTokenView.as_view(), name='get_ws_token'),
     path('auth/google/', GoogleLoginView.as_view(), name='google-login'),
+    path('tutor/<str:username>/', PublicTutorProfileView.as_view(), name='public-tutor-profile'),
 
     path('', include(router.urls)),
 ]

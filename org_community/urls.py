@@ -10,12 +10,13 @@ from .views import (
 
 router = DefaultRouter()
 router.register(r'discover', OrganizationDiscoveryViewSet, basename='org-discover')
-router.register(r'join-requests', OrgJoinRequestViewSet, basename='org-join-requests')
 router.register(r'my-invitations', UserInvitationsViewSet, basename='my-invitations')
 router.register(r'my-join-requests', UserJoinRequestViewSet, basename='my-join-requests')
 
+router.register(r'manage/requests', OrgJoinRequestViewSet, basename='org-manage-requests')
+router.register(r'manage/invitations', OrgSentInvitationsViewSet, basename='org-manage-invitations')
+
 urlpatterns = [
     path('request-join/', RequestToJoinView.as_view(), name='org-request-join'),
-    path('sent-invitations/', OrgSentInvitationsViewSet.as_view({'get': 'list'}), name='org-invitations'),
     path('', include(router.urls)),
 ]

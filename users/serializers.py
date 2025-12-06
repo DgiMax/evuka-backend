@@ -456,7 +456,7 @@ class DashboardLiveLessonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LiveLesson
-        fields = ["id", "title", "course_title", "date", "start_time", "jitsi_meeting_link"]
+        fields = ["id", "title", "course_title", "date", "start_time", "end_time", "jitsi_meeting_link"]
 
 
 class TransactionSerializer(serializers.ModelSerializer):
@@ -492,3 +492,113 @@ class NewsletterSubscriberSerializer(serializers.ModelSerializer):
         model = NewsletterSubscriber
         fields = ['email', 'is_active', 'created_at']
         read_only_fields = ['is_active', 'created_at']
+
+
+class StudentDashboardOrgSerializer(serializers.ModelSerializer):
+    """
+    Serializer to display organizations where the user is a student.
+    Used in the Personal Dashboard.
+    """
+    name = serializers.CharField(source='organization.name', read_only=True)
+    slug = serializers.CharField(source='organization.slug', read_only=True)
+    level = serializers.CharField(source='level.name', default="General", read_only=True)
+    logo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrgMembership
+        fields = ['name', 'slug', 'logo', 'level', 'expires_at']
+
+    def get_logo(self, obj):
+        if obj.organization.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.organization.logo.url)
+            return obj.organization.logo.url
+        return None
+
+
+class PublicSubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subject
+        fields = ['name', 'slug']
+
+
+class PublicTutorCourseSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer to display a list of courses on the tutor's profile.
+    """
+    category = serializers.CharField(source='global_subcategory.name', read_only=True)
+    level = serializers.CharField(source='global_level.name', read_only=True)
+    num_students = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Course
+        fields = [
+            'slug',
+            'title',
+            'thumbnail',
+            'price',
+            'rating_avg',
+            'num_students',
+            'category',
+            'level'
+        ]
+
+
+class PublicTutorProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    subjects = PublicSubjectSerializer(many=True, read_only=True)
+    courses = serializers.SerializerMethodField()
+
+    # Aggregated Stats
+    total_students = serializers.SerializerMethodField()
+    total_reviews = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CreatorProfile
+        fields = [
+            'username',
+            'display_name',
+            'headline',
+            'bio',
+            'profile_image',
+            'intro_video',
+            'education',
+            'is_verified',
+            'subjects',
+            'total_students',
+            'total_reviews',
+            'average_rating',
+            'courses',
+        ]
+
+    def get_courses(self, obj):
+        """
+        Return only Published and Public courses associated with this profile.
+        """
+        courses = obj.courses.filter(status='published', is_public=True).annotate_popularity()
+        return PublicTutorCourseSerializer(courses, many=True, context=self.context).data
+
+    def get_total_students(self, obj):
+        """Sum of students across all published courses."""
+        # Note: We use the related_name 'courses' from the Course model
+        return obj.courses.filter(status='published').aggregate(
+            total=Sum('enrollments__id', distinct=True)  # Approximation based on enrollments
+        )['total'] or 0
+
+    def get_total_reviews(self, obj):
+        """Sum of ratings across all courses."""
+        return obj.courses.filter(status='published').aggregate(
+            total=Sum('num_ratings')
+        )['total'] or 0
+
+    def get_average_rating(self, obj):
+        """Weighted average rating across courses."""
+        courses = obj.courses.filter(status='published')
+        total_rating_sum = sum(c.rating_avg * c.num_ratings for c in courses)
+        total_ratings_count = sum(c.num_ratings for c in courses)
+
+        if total_ratings_count > 0:
+            return round(total_rating_sum / total_ratings_count, 1)
+        return 0.0

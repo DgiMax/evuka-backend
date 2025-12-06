@@ -75,6 +75,25 @@ class LiveClassSerializer(serializers.ModelSerializer):
         return representation
 
 
+class LiveLessonCreateSerializer(serializers.ModelSerializer):
+    """
+    Specific serializer for manually adding a lesson.
+    Allows writing to 'live_class'.
+    """
+    class Meta:
+        model = LiveLesson
+        fields = [
+            "id",
+            "live_class",
+            "title",
+            "description",
+            "date",
+            "start_time",
+            "end_time",
+            "is_active",
+        ]
+
+
 class LiveClassMinimalSerializer(serializers.ModelSerializer):
     lessons_count = serializers.IntegerField(source='lessons.count', read_only=True)
 

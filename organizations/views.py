@@ -277,7 +277,12 @@ class OrgTeamViewSet(viewsets.ModelViewSet):
         active_org = getattr(self.request, "active_organization", None)
         if not active_org:
             return OrgMembership.objects.none()
-        return OrgMembership.objects.filter(organization=active_org).select_related('user')
+
+        allowed_roles = ['owner', 'admin', 'tutor']
+        return OrgMembership.objects.filter(
+            organization=active_org,
+            role__in=allowed_roles
+        ).select_related('user')
 
     @action(detail=False, methods=['post'])
     def invite(self, request):

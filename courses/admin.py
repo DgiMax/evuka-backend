@@ -112,10 +112,10 @@ class CourseAdmin(admin.ModelAdmin):
     list_display = (
         "title", "course_type", "status", "organization",
         "global_subcategory", "global_level", "price",
-        "get_average_rating", "num_ratings", "is_published", "created_at"
+        "get_average_rating", "num_ratings", "created_at"
     )
     list_filter = (
-        "course_type", "status", "is_published",
+        "course_type", "status",
         "organization", "global_subcategory", "global_level"
     )
     search_fields = ("title", "short_description", "long_description", "slug")
@@ -128,7 +128,7 @@ class CourseAdmin(admin.ModelAdmin):
     filter_horizontal = ("instructors",)
     inlines = [ModuleInline]
     ordering = ("-created_at",)
-    readonly_fields = ("is_published", "rating_avg", "num_ratings", "course_type", "created_at", "updated_at", "metadata")
+    readonly_fields = ("rating_avg", "num_ratings", "course_type", "created_at", "updated_at", "metadata")
 
     fieldsets = (
         ("Basic Info", {
@@ -144,7 +144,7 @@ class CourseAdmin(admin.ModelAdmin):
             "fields": ("creator", "creator_profile", "instructors")
         }),
         ("Pricing & Stats", {
-            "fields": ("price", "is_published", "rating_avg", "num_ratings")
+            "fields": ("price", "rating_avg", "num_ratings")
         }),
         ("Visibility", {
             "fields": ("is_public",)
