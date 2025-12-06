@@ -182,7 +182,7 @@ if USE_S3:
     # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
-            "BACKEND": "core.custom_storage.ConnectedBunnyStorage",
+            "BACKEND": "DVuka_Backend.custom_storage.ConnectedBunnyStorage",
         },
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
