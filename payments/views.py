@@ -37,7 +37,7 @@ def initiate_payment(request, order_id):
         return Response({
             "message": success_message,
             "free_order": True,
-            "redirect_url": "/dashboard/learning"
+            "redirect_url": "/dashboard"
         })
 
     method = request.data.get("payment_method", "card").lower()
