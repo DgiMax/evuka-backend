@@ -3,6 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from rest_framework import status
 
 from events.models import EventRegistration
 from organizations.models import OrgMembership
@@ -10,6 +11,7 @@ from .models import Payment, update_order_payment_status, Refund
 from .services.paystack import initialize_payment, verify_payment, refund_payment
 from orders.models import Order
 from courses.models import Enrollment
+from .utils import handle_successful_payment
 
 
 @api_view(["POST"])
@@ -17,7 +19,39 @@ from courses.models import Enrollment
 def initiate_payment(request, order_id):
     """Start a Paystack payment session"""
     order = get_object_or_404(Order, id=order_id, user=request.user)
+
+    if order.total_amount <= 0:
+        payment = Payment.objects.create(
+            order=order,
+            user=request.user,
+            provider="internal",
+            payment_method="free",
+            amount=0,
+            currency="KES",
+            status="successful",
+            transaction_id=f"FREE-{order.id}-{timezone.now().timestamp()}"
+        )
+
+        success_message = handle_successful_payment(payment)
+
+        return Response({
+            "message": success_message,
+            "free_order": True,
+            "redirect_url": "/dashboard/learning"
+        })
+
     method = request.data.get("payment_method", "card").lower()
+
+    email = request.data.get("email")
+
+    if not email:
+        email = request.user.email
+
+    if not email:
+        return Response(
+            {"error": "Email address is required for payment receipt."},
+            status=400
+        )
 
     payment = Payment.objects.create(
         order=order,
@@ -29,7 +63,7 @@ def initiate_payment(request, order_id):
     )
 
     response = initialize_payment(
-        email=request.user.email,
+        email=email,
         amount=payment.amount,
         reference=payment.reference_code,
         method=method,
@@ -66,50 +100,13 @@ def verify_payment_view(request, reference):
         return Response({"error": "Payment not found"}, status=status.HTTP_404_NOT_FOUND)
 
     if response.get("status") and response["data"]["status"] == "success":
+        # 1. Update Payment Specifics (Paystack stuff)
         payment.status = "successful"
         payment.transaction_id = response["data"]["id"]
         payment.save()
 
-        update_order_payment_status(payment.order)
-
-        order = payment.order
-        membership_id = payment.metadata.get('membership_id')
-
-        action_performed = []
-
-        for item in order.items.all():
-            if item.course:
-                Enrollment.objects.get_or_create(
-                    user=order.user, course=item.course, defaults={'status': 'active', 'role': 'student'}
-                )
-                action_performed.append(f"Course '{item.course.title}' enrollment")
-
-            elif item.event:
-                EventRegistration.objects.get_or_create(
-                    user=order.user,
-                    event=item.event,
-                    defaults={'status': 'registered', 'payment_status': 'paid', 'payment_reference': reference}
-                )
-                action_performed.append(f"Event '{item.event.title}' registration")
-
-            elif item.organization and membership_id:
-                try:
-                    membership = OrgMembership.objects.get(
-                        id=membership_id,
-                        organization=item.organization,
-                        payment_status='pending'
-                    )
-                    membership.activate_membership()
-                    action_performed.append(f"Organization '{item.organization.name}' membership activation")
-
-                except OrgMembership.DoesNotExist:
-                    action_performed.append(
-                        f"Organization '{item.organization.name}' membership activation failed (record missing)")
-
-        if action_performed:
-            success_message = "Payment verified successfully. " + " and ".join(action_performed) + "."
-        else:
-            success_message = "Payment verified successfully, but no specific enrollment action was performed."
+        # 2. Call the Reusable Logic
+        success_message = handle_successful_payment(payment)
 
         return Response({"message": success_message})
     else:
