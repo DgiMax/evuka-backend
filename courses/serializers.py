@@ -20,12 +20,12 @@ User = get_user_model()
 
 class InstructorSummarySerializer(serializers.ModelSerializer):
     """Basic instructor info used across views."""
-    instructor_name = serializers.CharField(source='user.get_full_name')
+    username = serializers.CharField(source='user.username', read_only=True)
+    creator_name = serializers.CharField(source='display_name', read_only=True)
 
     class Meta:
         model = CreatorProfile
-        fields = ("instructor_name", "bio")
-
+        fields = ("creator_name", "bio", "username")
 
 class GlobalCategorySerializer(serializers.ModelSerializer):
     class Meta:
