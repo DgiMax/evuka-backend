@@ -177,7 +177,7 @@ BUNNY_PULL_ZONE_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
 if USE_S3:
     # --- STATIC FILES (Keep Local for Admin Speed) ---
     STATIC_URL = '/static/'
-    STATIC_ROOT = BASE_DIR / "staticfiles"
+    STATIC_ROOT = BASE_DIR / "static"
 
     # --- MEDIA FILES (Bunny.net) ---
     # Configure Django 4.2+ STORAGES dictionary
