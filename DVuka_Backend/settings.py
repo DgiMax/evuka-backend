@@ -94,20 +94,27 @@ ASGI_APPLICATION = "DVuka_Backend.asgi.application"
 # 1. DATABASE CONFIGURATION
 # ------------------------------------------------
 # If POSTGRES_DB is set in .env, use PostgreSQL. Otherwise, use SQLite (Local).
-if os.environ.get('POSTGRES_DB'):
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.environ.get('POSTGRES_DB'),
-            'USER': os.environ.get('POSTGRES_USER'),
-            'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
-            'HOST': os.environ.get('POSTGRES_HOST'),
-            'PORT': os.environ.get('POSTGRES_PORT'),
-        }
-    }
-else:
-    # Fallback to SQLite for local testing if no Postgres config is found
-    DATABASES = {
+# if os.environ.get('POSTGRES_DB'):
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': os.environ.get('POSTGRES_DB'),
+#             'USER': os.environ.get('POSTGRES_USER'),
+#             'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
+#             'HOST': os.environ.get('POSTGRES_HOST'),
+#             'PORT': os.environ.get('POSTGRES_PORT'),
+#         }
+#     }
+# else:
+#     # Fallback to SQLite for local testing if no Postgres config is found
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.sqlite3',
+#             'NAME': BASE_DIR / 'db.sqlite3',
+#         }
+#     }
+
+DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
@@ -317,3 +324,10 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
+
+# Bunny.net Stream Config
+BUNNY_LIBRARY_ID=576084
+BUNNY_API_KEY="ad887a2c-493d-481b-9799ca4975e5-fe45-4f6f"
+BUNNY_PULL_ZONE = "vz-2a442acc-7d2"
+
+LIVE_SOCKET_URL = "ws://127.0.0.1:8001"

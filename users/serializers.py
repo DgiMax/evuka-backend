@@ -456,7 +456,17 @@ class DashboardLiveLessonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LiveLesson
-        fields = ["id", "title", "course_title", "date", "start_time", "end_time", "jitsi_meeting_link"]
+        fields = [
+            "id",
+            "title",
+            "course_title",
+            "date",
+            "start_time",
+            "end_time",
+            "is_active",
+            "hls_playback_url",
+            "chat_room_id"
+        ]
 
 
 class TransactionSerializer(serializers.ModelSerializer):
