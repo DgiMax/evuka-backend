@@ -4,7 +4,6 @@ from django.utils import timezone
 from django.utils.text import slugify
 from datetime import timedelta
 
-
 class Organization(models.Model):
     ORG_TYPES = [
         ("school", "School"),
@@ -18,9 +17,18 @@ class Organization(models.Model):
         ("free", "Free Access"),
     ]
 
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("pending_approval", "Pending Approval"),
+        ("approved", "Approved"),
+        ("suspended", "Suspended"),
+        ("archived", "Archived"),
+    ]
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True, blank=True)
-    org_type = models.CharField(max_length=20, choices=ORG_TYPES)
+    org_type = models.CharField(max_length=20, choices=ORG_TYPES, default="school")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
     description = models.TextField(blank=True, null=True)
     logo = models.ImageField(upload_to='org_logos/', null=True, blank=True)
     branding = models.JSONField(default=dict, blank=True)
@@ -50,12 +58,15 @@ class Organization(models.Model):
             base_slug = slugify(self.name)
             slug = base_slug
             counter = 1
-
             while Organization.objects.filter(slug=slug).exists():
                 slug = f"{base_slug}-{counter}"
                 counter += 1
-
             self.slug = slug
+
+        if self.status == 'approved':
+            self.approved = True
+        else:
+            self.approved = False
 
         super().save(*args, **kwargs)
 
@@ -116,7 +127,6 @@ class OrgMembership(models.Model):
 
     def activate_membership(self):
         org = self.organization
-
         if org.membership_period == "lifetime":
             self.expires_at = None
         elif org.membership_period == "monthly":
@@ -131,11 +141,7 @@ class OrgMembership(models.Model):
         self.save()
 
     def sync_access(self):
-        """
-        Automatically enrolls the user in all applicable published organization courses
-        and registers them for all upcoming, approved organization events based on their level.
-        This is run when membership is first activated.
-        """
+        # IMPORTS MOVED INSIDE TO PREVENT CIRCULAR DEPENDENCY
         from courses.models import Course, Enrollment
         from events.models import EventRegistration, Event
 
@@ -154,10 +160,7 @@ class OrgMembership(models.Model):
             Enrollment.objects.get_or_create(
                 user=self.user,
                 course=course,
-                defaults={
-                    'role': 'student',
-                    'status': 'active'
-                }
+                defaults={'role': 'student', 'status': 'active'}
             )
 
         now = timezone.now()
@@ -171,10 +174,7 @@ class OrgMembership(models.Model):
             EventRegistration.objects.get_or_create(
                 event=event,
                 user=self.user,
-                defaults={
-                    'status': 'registered',
-                    'payment_status': 'free'
-                }
+                defaults={'status': 'registered', 'payment_status': 'free'}
             )
 
     def save(self, *args, **kwargs):
@@ -182,9 +182,7 @@ class OrgMembership(models.Model):
                 self.pk is None or
                 (OrgMembership.objects.filter(pk=self.pk, is_active=False).exists() and self.is_active == True)
         )
-
         super().save(*args, **kwargs)
-
         if is_new_or_activated and self.role == 'student':
             self.sync_access()
 
@@ -220,13 +218,7 @@ class OrgCategory(models.Model):
     )
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
-
-    thumbnail = models.ImageField(
-        upload_to='org_category_thumbnails/',
-        blank=True,
-        null=True
-    )
-
+    thumbnail = models.ImageField(upload_to='org_category_thumbnails/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -243,9 +235,7 @@ class OrgLevel(models.Model):
         Organization, on_delete=models.CASCADE, related_name="levels"
     )
     name = models.CharField(max_length=100)
-    order = models.PositiveIntegerField(
-        default=0, help_text="Used for sorting levels"
-    )
+    order = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -26,8 +26,9 @@ from courses.models import Course, Enrollment, LessonProgress
 from events.models import Event
 from live.models import LiveLesson
 from organizations.models import OrgMembership, Organization
+from payments.services.paystack_payout import create_transfer_recipient
 from revenue.models import Payout, Transaction, Wallet
-from .models import CreatorProfile, StudentProfile, TutorPayoutMethod, NewsletterSubscriber
+from .models import CreatorProfile, StudentProfile, NewsletterSubscriber, BankingDetails
 from .permissions import IsTutor
 from .serializers import (
     RegisterSerializer,
@@ -39,9 +40,10 @@ from .serializers import (
     ChangePasswordSerializer, DashboardEventSerializer, DashboardCourseSerializer,
     StudentProfileSerializer,
     CreatorProfileSerializer, DashboardLiveLessonSerializer, DashboardEventMinimalSerializer,
-    DashboardCourseMinimalSerializer, WalletSerializer, TransactionSerializer, TutorPayoutMethodSerializer,
+    DashboardCourseMinimalSerializer, WalletSerializer, TransactionSerializer,
     PayoutSerializer, CreatorProfilePublicSerializer, StudentProfileReadSerializer, NewsletterSubscriberSerializer,
-    GoogleLoginSerializer, UserDetailSerializer, PublicTutorProfileSerializer,
+    GoogleLoginSerializer, UserDetailSerializer, PublicTutorProfileSerializer, BankingDetailsInputSerializer,
+    BankingDetailsViewSerializer, InstructorSearchSerializer,
 )
 from users.serializers import WebSocketTokenSerializer
 
@@ -438,6 +440,7 @@ class CurrentUserView(APIView):
             "is_verified": user.is_verified,
             "is_tutor": user.is_tutor,
             "is_student": user.is_student,
+            "is_publisher": user.is_publisher,
             "organizations": org_data
         }
 
@@ -710,13 +713,13 @@ class TutorDashboardView(APIView):
     def get(self, request, format=None):
         user = request.user
         active_org = getattr(request, "active_organization", None)
-        today = timezone.now().date()
         now = timezone.now()
 
+        # 1. Context Switching Logic
         if active_org:
             membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
             if not membership:
-                 return Response({"error": "Not a member of this organization"}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"error": "Not a member of this organization"}, status=status.HTTP_403_FORBIDDEN)
 
             is_admin = membership.role in ["admin", "owner"]
 
@@ -729,10 +732,12 @@ class TutorDashboardView(APIView):
                 events_qs = Event.objects.filter(course__organization=active_org, organizer=user)
                 context_label = "Organization Tutor View"
         else:
+            # Independent Tutor View
             courses_qs = Course.objects.filter(organization__isnull=True, creator=user)
             events_qs = Event.objects.filter(course__organization__isnull=True, organizer=user)
             context_label = "Personal Tutor View"
 
+        # 2. Metrics Calculation
         total_courses = courses_qs.count()
         total_events = events_qs.count()
         upcoming_events_count = events_qs.filter(start_time__gte=now).count()
@@ -742,38 +747,43 @@ class TutorDashboardView(APIView):
             status='active'
         ).values('user').distinct().count()
 
+        # Calculate active tutors (Only relevant for Org Admins)
         active_tutors_count = 0
         if active_org and is_admin:
-             active_tutors_count = OrgMembership.objects.filter(
-                 organization=active_org,
-                 role__in=['tutor', 'admin', 'owner'],
-                 is_active=True
-             ).count()
+            active_tutors_count = OrgMembership.objects.filter(
+                organization=active_org,
+                role__in=['tutor', 'admin', 'owner'],
+                is_active=True
+            ).count()
         elif active_org or not active_org:
-             active_tutors_count = 1
+            active_tutors_count = 1
 
+        # Calculate Total Revenue
         revenue_agg = Enrollment.objects.filter(
             course__in=courses_qs,
             status='active'
-         ).aggregate(
+        ).aggregate(
             total=Coalesce(Sum('course__price'), 0, output_field=DecimalField())
         )
         total_revenue = revenue_agg['total']
 
-        current_time = timezone.now().time()
+        # 3. Fetch Lists
 
+        # Live Classes: Ongoing OR Future (end_datetime >= now)
+        # We assume if the end time hasn't passed, it's either happening now or in the future.
         upcoming_classes_qs = LiveLesson.objects.filter(
-            live_class__course__in=courses_qs
-        ).filter(
-            Q(date__gt=today) | Q(date=today, end_time__gte=current_time)
+            live_class__course__in=courses_qs,
+            is_cancelled=False,
+            end_datetime__gte=now  # Captures both ONGOING and FUTURE
         ).select_related(
             'live_class', 'live_class__course'
-        ).order_by('date', 'start_time')[:10]
+        ).order_by('start_datetime')[:10]
 
         upcoming_events_list_qs = events_qs.filter(
             start_time__gte=now
         ).order_by('start_time')[:5]
 
+        # Best Performing Courses (by student count)
         best_courses_qs = courses_qs.annotate(
             student_count=Count('enrollments', filter=Q(enrollments__status='active')),
             revenue=Coalesce(
@@ -783,6 +793,7 @@ class TutorDashboardView(APIView):
             )
         ).order_by('-student_count')[:5]
 
+        # 4. Serialize Response
         data = {
             "context": context_label,
             "metrics": {
@@ -793,54 +804,16 @@ class TutorDashboardView(APIView):
                 "upcoming_events_count": upcoming_events_count,
                 "total_events": total_events,
             },
-            "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes_qs, many=True, context={'request': request}).data,
-            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events_list_qs, many=True, context={'request': request}).data,
-            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses_qs, many=True, context={'request': request}).data,
+            "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes_qs, many=True,
+                                                              context={'request': request}).data,
+            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events_list_qs, many=True,
+                                                               context={'request': request}).data,
+            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses_qs, many=True,
+                                                                        context={'request': request}).data,
         }
 
         return Response(data, status=status.HTTP_200_OK)
 
-
-class TutorRevenueView(APIView):
-    """
-    Context-aware revenue and payout data.
-    """
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, format=None):
-        user = request.user
-        active_org = getattr(request, "active_organization", None)
-
-        wallet_filter = {}
-        context_label = "Personal Finance"
-
-        if active_org:
-             membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
-             if membership and membership.role in ["admin", "owner"]:
-                 wallet_filter['owner_org'] = active_org
-                 context_label = "Organization Finance"
-             else:
-                 wallet_filter['owner_user'] = user
-                 context_label = "Personal Finance"
-        else:
-            wallet_filter['owner_user'] = user
-            context_label = "Personal Finance"
-
-        wallet, created = Wallet.objects.get_or_create(**wallet_filter)
-
-        transactions = Transaction.objects.filter(wallet=wallet).order_by('-created_at')[:20]
-        payouts = Payout.objects.filter(wallet=wallet).order_by('-created_at')[:10]
-
-        payout_methods = TutorPayoutMethod.objects.filter(profile__user=user)
-
-        data = {
-            "context": context_label,
-            "wallet": WalletSerializer(wallet).data,
-            "recent_transactions": TransactionSerializer(transactions, many=True).data,
-            "payout_history": PayoutSerializer(payouts, many=True).data,
-            "payout_methods": TutorPayoutMethodSerializer(payout_methods, many=True).data,
-        }
-        return Response(data, status=status.HTTP_200_OK)
 
 class TutorAnalyticsView(APIView):
     """
@@ -1015,3 +988,100 @@ class PublicTutorProfileView(generics.RetrieveAPIView):
 
         self.check_object_permissions(self.request, obj)
         return obj
+
+
+class PayoutMethodView(APIView):
+    """
+    Manage Payout Methods (Bank/MPESA).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Show current linked account"""
+        if hasattr(request.user, 'banking_details'):
+            serializer = BankingDetailsViewSerializer(request.user.banking_details)
+            return Response(serializer.data)
+        return Response({"message": "No payout method linked"}, status=200)
+
+    def post(self, request):
+        """
+        Add/Update Payout Method.
+        Steps:
+        1. Validate Input
+        2. Send to Paystack -> Get Recipient Code
+        3. Save Recipient Code to DB
+        """
+        serializer = BankingDetailsInputSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        data = serializer.validated_data
+
+        try:
+            # 1. Talk to Paystack (Tokenize the sensitive data)
+            # This function calls Paystack API
+            recipient_data = create_transfer_recipient(
+                name=data['account_name'],
+                account_number=data['account_number'],
+                bank_code=data['bank_code']
+            )
+
+            # 2. Extract safe data
+            code = recipient_data['recipient_code']
+            # Paystack returns the official bank name (e.g. "KCB Bank")
+            bank_name_confirmed = recipient_data.get('details', {}).get('bank_name', data['bank_code'])
+
+            # 3. Create Masked Number (e.g., 0712***89)
+            raw_num = data['account_number']
+            if len(raw_num) > 4:
+                masked = f"{raw_num[:3]}****{raw_num[-2:]}"
+            else:
+                masked = "****"
+
+            # 4. Save to DB (Update if exists)
+            BankingDetails.objects.update_or_create(
+                user=request.user,
+                defaults={
+                    "paystack_recipient_code": code,
+                    "bank_name": bank_name_confirmed,
+                    "display_number": masked,
+                    "is_verified": True
+                }
+            )
+
+            return Response({
+                "message": "Payout method linked successfully!",
+                "bank": bank_name_confirmed
+            }, status=201)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
+
+
+class SearchInstructorsView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = InstructorSearchSerializer
+
+    def get_queryset(self):
+        query = self.request.query_params.get('q', '').strip()
+        org_slug = self.request.query_params.get('org_slug', None)  # Get org context
+
+        base_filters = Q(creator_profile__isnull=False)
+
+        if org_slug:
+            org_filters = Q(
+                memberships__organization__slug=org_slug,
+                memberships__is_active=True,
+                memberships__role__in=['tutor', 'admin', 'owner']
+            )
+            base_filters &= org_filters
+
+        if len(query) >= 3:
+            text_filters = Q(username__icontains=query) | Q(creator_profile__display_name__icontains=query)
+            base_filters &= text_filters
+        elif not org_slug:
+            return User.objects.none()
+
+        qs = User.objects.filter(base_filters).select_related('creator_profile').distinct()
+
+        return qs[:10]

@@ -24,7 +24,7 @@ from .models import (
     GlobalCategory,
     GlobalSubCategory,
     GlobalLevel, Answer, Option, QuizAttempt, Question, Quiz, Module, AssignmentSubmission, CourseAssignment,
-    CourseNote, CourseQuestion,
+    CourseNote, CourseQuestion, LessonResource,
 )
 from .permissions import IsEnrolled, IsTutorOrOrgAdmin
 from .filters import CourseFilter
@@ -38,6 +38,7 @@ from .serializers import (
     CourseManagementDashboardSerializer, CourseAssignmentAtomicSerializer, PopularCourseMinimalSerializer,
     QuizQuestionLearningSerializer, ExistingAnswerSerializer, AssignmentSubmissionCreateSerializer,
     CourseNoteSerializer, CourseReplySerializer, CourseQuestionSerializer, QuizCreateUpdateSerializer,
+    LessonResourceSerializer
 )
 from .services import CourseProgressService
 
@@ -143,7 +144,7 @@ class CourseViewSet(
             )
 
         if self.action in ["retrieve", "learn"]:
-            queryset = queryset.prefetch_related("modules__lessons", "live_classes__lessons")
+            queryset = queryset.prefetch_related("modules__lessons__resources", "live_classes__lessons")
             return queryset.select_related(
                 "organization",
                 "creator_profile__user",
@@ -362,12 +363,15 @@ class TutorCourseViewSet(viewsets.ModelViewSet):
             if membership and membership.role in ["admin", "owner"]:
                 return queryset.filter(organization=active_org)
             else:
-                return queryset.filter(organization=active_org, creator=user)
+                return queryset.filter(
+                    Q(organization=active_org) &
+                    (Q(creator=user) | Q(instructors__in=[user]))
+                ).distinct()
 
         return queryset.filter(
-            creator_profile__user=user,
+            Q(creator_profile__user=user) | Q(instructors__in=[user]),
             organization__isnull=True,
-        )
+        ).distinct()
 
     def retrieve(self, request, *args, **kwargs):
         course = self.get_object()
@@ -704,7 +708,7 @@ class CoursePreviewView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return Course.objects.filter(creator_profile__user=user)
+        return Course.objects.filter(Q(creator_profile__user=user) | Q(instructors__in=[user])).distinct()
 
 
 class CourseDetailsPreviewView(generics.RetrieveAPIView):
@@ -717,7 +721,7 @@ class CourseDetailsPreviewView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return Course.objects.filter(creator_profile__user=user)
+        return Course.objects.filter(Q(creator_profile__user=user) | Q(instructors__in=[user])).distinct()
 
 
 class QuizAttemptViewSet(viewsets.ViewSet):
@@ -1133,5 +1137,3 @@ class AssignmentSubmissionViewSet(viewsets.GenericViewSet):
 
         return Response(AssignmentSubmissionManagerSerializer(updated_submission).data,
                         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
-
-

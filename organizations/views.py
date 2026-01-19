@@ -11,17 +11,14 @@ from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from rest_framework.generics import CreateAPIView
 
-# --- External App Imports ---
 from orders.models import Order, OrderItem
 from payments.models import Payment
-from payments.services.paystack import initialize_payment
+from payments.services.paystack import initialize_transaction
 
-# --- Local Imports (Organizations App) ---
 from .models import Organization, OrgMembership, GuardianLink, OrgCategory, OrgLevel
 from .filters import OrganizationFilter
 from .permissions import IsOrgMember, IsOrgAdminOrOwner, IsOrgStaff, get_active_org
 
-# Imported from your local serializers.py (which we fixed in the previous step)
 from .serializers import (
     OrganizationSerializer, OrgMembershipSerializer, GuardianLinkSerializer,
     OrgLevelSerializer, OrgCategorySerializer, OrganizationCreateSerializer,
@@ -30,7 +27,6 @@ from .serializers import (
     OrgAdminInvitationSerializer
 )
 
-# --- Org Community Imports ---
 from org_community.models import OrgJoinRequest, OrgInvitation
 from org_community.serializers import OrgJoinRequestSerializer, OrgInvitationSerializer
 
@@ -52,9 +48,11 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     filterset_class = OrganizationFilter
 
     def get_queryset(self):
+        # Base: Public approved orgs
         queryset = Organization.objects.filter(approved=True)
+
         if self.request.user.is_authenticated:
-            # Users can also see unapproved orgs they belong to (e.g., drafts)
+            # Add orgs the user is a member of (including drafts/pending)
             my_orgs = Organization.objects.filter(memberships__user=self.request.user)
             queryset = (queryset | my_orgs).distinct()
 
@@ -63,7 +61,11 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ["approve", "reject"]:
             return [IsModeratorOrSuperAdmin()]
-        if self.action in ['list', 'retrieve']:
+        if self.action == 'create':
+            return [permissions.IsAuthenticated()]
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [permissions.IsAuthenticated(), IsOrgAdminOrOwner()]
+        if self.action in ['list', 'retrieve', 'details_view']:
             return [permissions.AllowAny()]
         return [permissions.IsAuthenticated()]
 
@@ -72,9 +74,14 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return OrganizationCreateSerializer
         if self.action == 'list':
             return OrganizationListSerializer
-        if self.action in ['retrieve', 'current', 'details_view']:
+        if self.action in ['retrieve', 'current', 'details_view', 'update', 'partial_update']:
             return OrganizationDetailSerializer
         return self.serializer_class
+
+    def perform_destroy(self, instance):
+        # We override destroy to handle soft-deletion if needed, or simply let the model delete.
+        # Permission check happens in IsOrgAdminOrOwner via has_object_permission
+        instance.delete()
 
     @action(detail=True, methods=['get'], url_path='details')
     def details_view(self, request, slug=None):
@@ -89,7 +96,6 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Organization slug header missing."}, status=400)
 
         try:
-            # We use the base queryset logic to ensure they have access
             org = self.get_queryset().get(slug=slug)
         except Organization.DoesNotExist:
             return Response({"detail": "Organization not found or access denied."}, status=404)
@@ -113,13 +119,17 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsModeratorOrSuperAdmin])
     def approve(self, request, slug=None):
         org = self.get_object()
-        org.approve()
+        org.status = 'approved'
+        org.save()
         return Response({"status": "approved"})
 
     @action(detail=True, methods=["post"], permission_classes=[IsModeratorOrSuperAdmin])
     def reject(self, request, slug=None):
         org = self.get_object()
-        org.reject(delete=False)
+        # Soft delete or set status to rejected based on model logic?
+        # Model currently has no 'rejected' status, assuming delete=False means maybe just un-approve
+        org.status = 'suspended'
+        org.save()
         return Response({"status": "rejected"})
 
     @action(detail=True, methods=['post'], url_path='validate_enrollment',
@@ -186,8 +196,8 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                       'org_level_id': membership.level.id if membership.level else None}
         )
 
-        response = initialize_payment(email=user.email, amount=transaction_payment.amount,
-                                      reference=transaction_payment.reference_code, method=payment_method)
+        response = initialize_transaction(email=user.email, amount=transaction_payment.amount,
+                                          reference=transaction_payment.reference_code, method=payment_method)
 
         if response.get("status"):
             transaction_payment.metadata.update({"authorization_url": response["data"]["authorization_url"],
@@ -241,11 +251,7 @@ class GuardianLinkViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-
-        # 1. Base Logic: Users can ALWAYS see links where they are the parent or student
         queryset = GuardianLink.objects.filter(Q(parent=user) | Q(student=user))
-
-        # 2. Admin Logic: If an Admin is viewing their Organization's dashboard
         active_org = get_active_org(self.request)
 
         if active_org:
@@ -334,26 +340,14 @@ class OrganizationCreateView(CreateAPIView):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        # FIX: We rely on the Serializer to create the Org AND the initial Owner Membership
-        # This prevents the 'IntegrityError' of trying to add the owner twice.
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         organization = serializer.save()
-
-        # NOTE: OrgMembership creation removed here because OrganizationCreateSerializer handles it.
-
-        # We manually use the OrganizationSerializer for the response
-        # to ensure any 'logo' URL is formatted correctly as absolute.
         response_serializer = OrganizationSerializer(organization, context={'request': request})
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 
 class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Handles listing and approving join requests.
-    Note: Ideally, these models should be managed in the 'org_community' app views,
-    but they are included here if you prefer a single 'organization' view file.
-    """
     serializer_class = OrgJoinRequestSerializer
     permission_classes = [IsOrgStaff]
 
@@ -386,8 +380,6 @@ class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
         OrgMembership.objects.create(user=req.user, organization=req.organization, role='tutor', is_active=True)
         req.status = 'approved'
         req.save()
-
-        # Auto-reject any pending invitations if the request is approved
         OrgInvitation.objects.filter(invited_user=req.user, organization=req.organization, status='pending').update(
             status='rejected')
         return Response({"status": "Approved."})
@@ -469,7 +461,6 @@ class OrganizationTeamView(APIView):
             role__in=['owner', 'admin', 'tutor']
         ).select_related('user', 'user__creator_profile').prefetch_related('subjects')
 
-        # IMPORTANT: Passing context here ensures images in the nested TeamMemberProfileSerializer are absolute URLs
         serializer = OrgTeamMemberSerializer(memberships, many=True, context={'request': request})
 
         management = [m for m in serializer.data if m['role'] in ['owner', 'admin']]

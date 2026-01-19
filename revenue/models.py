@@ -1,102 +1,102 @@
-from django.db import models
-from django.conf import settings
-from django.utils import timezone
+import uuid
 from decimal import Decimal
-
-User = settings.AUTH_USER_MODEL
+from django.db import models, transaction
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 
 class Wallet(models.Model):
-    """
-    Represents a wallet belonging to a user or an organization.
-    """
     owner_user = models.OneToOneField(
-        User, null=True, blank=True, on_delete=models.CASCADE, related_name="wallet"
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="wallet"
     )
     owner_org = models.OneToOneField(
-        "organizations.Organization", null=True, blank=True, on_delete=models.CASCADE, related_name="wallet"
+        'organizations.Organization',
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="wallet"
     )
+
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    currency = models.CharField(max_length=10, default="KES")
+    currency = models.CharField(max_length=3, default="KES")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        if self.owner_user:
-            return f"Wallet - {self.owner_user.username}"
-        elif self.owner_org:
-            return f"Wallet - {self.owner_org.name}"
-        return "Wallet (unassigned)"
+        owner = self.owner_user.username if self.owner_user else self.owner_org.name
+        return f"{owner}'s Wallet ({self.currency} {self.balance})"
 
-    def credit(self, amount: Decimal, description=""):
-        """Add money to wallet."""
-        self.balance = (self.balance or Decimal("0.00")) + Decimal(amount)
-        self.save(update_fields=["balance"])
-        Transaction.objects.create(
-            wallet=self,
-            tx_type="credit",
-            amount=amount,
-            description=description,
-        )
+    @classmethod
+    def get_system_wallet(cls):
+        return cls.objects.get(owner_org__name="Evuka Platform")
 
-    def debit(self, amount: Decimal, description=""):
-        """Remove money from wallet."""
-        if self.balance < amount:
-            raise ValueError("Insufficient balance.")
-        self.balance -= amount
-        self.save(update_fields=["balance"])
-        Transaction.objects.create(
-            wallet=self,
-            tx_type="debit",
-            amount=amount,
-            description=description,
-        )
+    def deposit(self, amount, description, tx_type="credit"):
+        with transaction.atomic():
+            locked_wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+            locked_wallet.balance += Decimal(str(amount))
+            locked_wallet.save()
+
+            Transaction.objects.create(
+                wallet=locked_wallet,
+                tx_type=tx_type,
+                amount=amount,
+                description=description,
+                balance_after=locked_wallet.balance
+            )
+
+    def withdraw(self, amount, description, tx_type="debit"):
+        with transaction.atomic():
+            locked_wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+
+            if locked_wallet.balance < Decimal(str(amount)):
+                raise ValidationError(f"Insufficient funds. Available: {locked_wallet.balance}")
+
+            locked_wallet.balance -= Decimal(str(amount))
+            locked_wallet.save()
+
+            Transaction.objects.create(
+                wallet=locked_wallet,
+                tx_type=tx_type,
+                amount=-Decimal(str(amount)),
+                description=description,
+                balance_after=locked_wallet.balance
+            )
 
 
 class Transaction(models.Model):
-    """
-    Records any wallet-related movement (credit/debit).
-    """
     TX_TYPES = [
-        ("credit", "Credit"),
-        ("debit", "Debit"),
-        ("commission", "Platform Commission"),
-        ("org_share", "Organization Share"),
-        ("tutor_income", "Tutor Income"),
+        ('credit', 'Credit'),
+        ('debit', 'Debit'),
+        ('fee', 'Platform Fee'),
+        ('refund', 'Refund'),
     ]
 
-    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="transactions")
-    tx_type = models.CharField(max_length=30, choices=TX_TYPES)
+    wallet = models.ForeignKey(Wallet, related_name="transactions", on_delete=models.CASCADE)
+    tx_type = models.CharField(max_length=10, choices=TX_TYPES)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    description = models.TextField(blank=True)
+    description = models.CharField(max_length=255)
+    balance_after = models.DecimalField(max_digits=12, decimal_places=2)
+    reference = models.CharField(max_length=100, default=uuid.uuid4)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.tx_type} - {self.amount} ({self.wallet})"
 
 
 class Payout(models.Model):
-    """
-    Tracks tutor or organization withdrawals.
-    """
     STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("processing", "Processing"),
-        ("completed", "Completed"),
-        ("failed", "Failed"),
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
     ]
 
-    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name="payouts")
+    wallet = models.ForeignKey(Wallet, related_name="payouts", on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    reference = models.CharField(max_length=100, unique=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    created_at = models.DateTimeField(default=timezone.now)
+    reference = models.CharField(max_length=100, unique=True, default=uuid.uuid4)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    failure_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
-
-    def mark_completed(self):
-        self.status = "completed"
-        self.processed_at = timezone.now()
-        self.save(update_fields=["status", "processed_at"])
-
-    def __str__(self):
-        return f"Payout {self.reference} - {self.amount} ({self.status})"

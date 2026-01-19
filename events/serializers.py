@@ -85,6 +85,10 @@ class EventListSerializer(serializers.ModelSerializer):
             "banner_image",
             "course_title",
             "computed_status",
+            "event_type",
+            "price",
+            "currency",
+            "is_paid"
         ]
 
     def get_banner_image(self, obj):
@@ -106,8 +110,10 @@ class EventSerializer(serializers.ModelSerializer):
     course = SimpleCourseSerializer(read_only=True)
     is_full = serializers.BooleanField(read_only=True)
     is_registered = serializers.SerializerMethodField()
+    has_ticket = serializers.SerializerMethodField()
     computed_status = serializers.CharField(read_only=True)
     banner_image = serializers.SerializerMethodField()
+    meeting_link = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -139,6 +145,7 @@ class EventSerializer(serializers.ModelSerializer):
             "registrations_count",
             "is_full",
             "is_registered",
+            "has_ticket",
             "attachments",
             "agenda",
             "learning_objectives",
@@ -156,6 +163,9 @@ class EventSerializer(serializers.ModelSerializer):
             return obj.banner_image.url
         return None
 
+    def get_meeting_link(self, obj):
+        return None
+
     def get_is_registered(self, obj):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
@@ -164,10 +174,19 @@ class EventSerializer(serializers.ModelSerializer):
             event=obj, user=request.user, status="registered"
         ).exists()
 
+    def get_has_ticket(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return False
+        if obj.event_type == 'online':
+            return False
+
+        return EventRegistration.objects.filter(
+            event=obj, user=request.user, status="registered"
+        ).exists()
+
 
 class CreateEventSerializer(serializers.ModelSerializer):
-    """Serializer for tutors to create events."""
-
     course = serializers.PrimaryKeyRelatedField(
         queryset=Course.objects.all()
     )
@@ -212,7 +231,6 @@ class CreateEventSerializer(serializers.ModelSerializer):
         read_only_fields = ["slug", "created_at", "updated_at"]
 
     def validate(self, attrs):
-        """Ensure event timing and integrity."""
         start = attrs.get("start_time")
         end = attrs.get("end_time")
         course = attrs.get("course")
@@ -229,8 +247,6 @@ class CreateEventSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        """Auto-assign organizer and handle nested creation."""
-
         objectives_data = validated_data.pop("learning_objectives", [])
         agenda_data = validated_data.pop("agenda", [])
         rules_data = validated_data.pop("rules", [])
@@ -263,13 +279,9 @@ class CreateEventSerializer(serializers.ModelSerializer):
         return event
 
     def to_representation(self, instance):
-        """Return complete event data including nested relationships and absolute URLs."""
-        # Note: We don't call super().to_representation(instance) immediately because we need custom URL handling
-        # Using the standard EventSerializer for representation ensures consistency with absolute URLs
         return EventSerializer(instance, context=self.context).data
 
     def update(self, instance, validated_data):
-        """Handle nested updates for event editing."""
         objectives_data = validated_data.pop("learning_objectives", [])
         agenda_data = validated_data.pop("agenda", [])
         rules_data = validated_data.pop("rules", [])
@@ -299,7 +311,6 @@ class CreateEventSerializer(serializers.ModelSerializer):
 
 
 class TutorEventDetailSerializer(serializers.ModelSerializer):
-    """Detailed view for tutors to manage their events."""
     course = SimpleCourseSerializer(read_only=True)
     attachments = EventAttachmentSerializer(many=True, read_only=True)
     agenda = EventAgendaSerializer(many=True, read_only=True)
@@ -389,7 +400,6 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
 
 
 class FeaturedEventSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for the 'Best Upcoming' homepage card."""
     banner_image = serializers.SerializerMethodField()
 
     class Meta:

@@ -10,10 +10,10 @@ from django.db.models import Count, Q
 from live.models import LiveClass
 from organizations.models import Organization, OrgLevel, OrgCategory
 from users.models import CreatorProfile
+from books.models import CourseBook
 
 
 class GlobalCategory(models.Model):
-    """General/global categories for independent courses (Marketplace taxonomy)."""
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     slug = models.SlugField(unique=True)
@@ -34,10 +34,6 @@ class GlobalCategory(models.Model):
 
 
 class GlobalSubCategory(models.Model):
-    """
-    A subcategory that belongs to a single GlobalCategory.
-    e.g., "Web Development" (SubCategory) under "Technology" (Category).
-    """
     category = models.ForeignKey(
         GlobalCategory,
         on_delete=models.CASCADE,
@@ -56,24 +52,20 @@ class GlobalSubCategory(models.Model):
     )
 
     class Meta:
-        # A subcategory name must be unique within its parent
         unique_together = ('category', 'name')
         ordering = ['category', 'name']
         verbose_name_plural = "Global Subcategories"
 
     def __str__(self):
-        # Provides a nice, readable name like: "Technology > Web Development"
         return f"{self.category.name} > {self.name}"
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            # Auto-generate a unique slug, e.g., "web-development"
             self.slug = slugify(self.name)
         super().save(*args, **kwargs)
 
 
 class GlobalLevel(models.Model):
-    """General/global levels (Beginner, Intermediate, Advanced)."""
     name = models.CharField(max_length=100, unique=True)
     order = models.PositiveIntegerField(default=0, help_text="For sorting levels")
     description = models.TextField(blank=True)
@@ -87,12 +79,10 @@ class GlobalLevel(models.Model):
 
 
 class CourseQuerySet(models.QuerySet):
-    """Custom QuerySet to annotate popularity and filter published courses."""
     def published(self):
         return self.filter(status='published')
 
     def annotate_popularity(self):
-        """Annotates the queryset with the count of active enrollments."""
         return self.annotate(
             active_enrollment_count=Count(
                 'enrollments',
@@ -116,7 +106,7 @@ class Course(models.Model):
     ]
 
     title = models.CharField(max_length=255)
-    slug = models.SlugField(unique=True)
+    slug = models.SlugField(unique=True, blank=True)
 
     short_description = models.CharField(max_length=500, blank=True, help_text="Brief course summary")
     long_description = models.TextField(blank=True, help_text="Full course description (Markdown supported)")
@@ -132,33 +122,33 @@ class Course(models.Model):
         related_name="created_courses"
     )
     creator_profile = models.ForeignKey(
-        CreatorProfile,
+        "users.CreatorProfile",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses"
     )
     organization = models.ForeignKey(
-        Organization,
+        "organizations.Organization",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses"
     )
 
     org_category = models.ForeignKey(
-        OrgCategory,
+        "organizations.OrgCategory",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses"
     )
     org_level = models.ForeignKey(
-        OrgLevel,
+        "organizations.OrgLevel",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses"
     )
 
     global_subcategory = models.ForeignKey(
-        GlobalSubCategory,
+        "courses.GlobalSubCategory",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses",
@@ -166,7 +156,7 @@ class Course(models.Model):
     )
 
     global_level = models.ForeignKey(
-        GlobalLevel,
+        "courses.GlobalLevel",
         null=True, blank=True,
         on_delete=models.SET_NULL,
         related_name="courses"
@@ -192,7 +182,7 @@ class Course(models.Model):
     price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     is_public = models.BooleanField(
         default=False,
-        help_text="If True, course is visible outside the organization's portal (in the main marketplace). Only relevant for organization courses."
+        help_text="If True, course is visible outside the organization's portal (in the main marketplace)."
     )
     metadata = models.JSONField(default=dict, blank=True)
     rating_avg = models.FloatField(default=0)
@@ -200,7 +190,6 @@ class Course(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    objects = CourseQuerySet.as_manager()
 
     class Meta:
         ordering = ["title"]
@@ -210,24 +199,32 @@ class Course(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.title)
+            base_slug = slugify(self.title)
+            slug = base_slug
+            counter = 1
+            # Ensure unique slug if needed
+            while Course.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
 
-        # Infer course type based on organization
         self.course_type = "organization" if self.organization else "independent"
 
         if self.course_type == "independent":
             self.is_public = True
-
-        if self.course_type == "organization":
-            if not self.org_category or not self.org_level:
-                raise ValueError("Organization courses must have OrgCategory and OrgLevel.")
-            if (self.status == "published") and (not self.global_subcategory or not self.global_level):
-                raise ValueError("Published organization courses must have GlobalSubCategory and GlobalLevel.")
-        elif self.course_type == "independent":
-            if not self.global_subcategory or not self.global_level:
-                raise ValueError("Independent courses must have GlobalSubCategory and GlobalLevel.")
             self.org_category = None
             self.org_level = None
+
+        if self.status != 'draft':
+            if self.course_type == "organization":
+                if not self.org_category or not self.org_level:
+                    raise ValueError("Organization courses must have OrgCategory and OrgLevel.")
+                if (self.status == "published") and (not self.global_subcategory or not self.global_level):
+                    raise ValueError("Published organization courses must have GlobalSubCategory and GlobalLevel.")
+
+            elif self.course_type == "independent":
+                if not self.global_subcategory or not self.global_level:
+                    raise ValueError("Independent courses must have GlobalSubCategory and GlobalLevel.")
 
         super().save(*args, **kwargs)
 
@@ -238,7 +235,6 @@ class Course(models.Model):
     def archive(self):
         self.status = "archived"
         self.save()
-
 
 class CourseNote(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="course_notes")
@@ -284,7 +280,6 @@ class CourseReply(models.Model):
 
 
 class CourseRating(models.Model):
-    """User ratings and reviews for courses."""
     course = models.ForeignKey(Course, related_name="ratings", on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     rating = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
@@ -324,7 +319,6 @@ class Lesson(models.Model):
                                      blank=True)
     title = models.CharField(max_length=255)
     content = models.TextField(help_text="Markdown supported")
-    resources = models.JSONField(default=dict, blank=True)
     video_file = models.FileField(upload_to='lesson_videos/', blank=True, null=True)
     order = models.PositiveIntegerField(default=0)
     estimated_duration_minutes = models.PositiveIntegerField(default=0, help_text="Estimated duration in minutes")
@@ -335,6 +329,45 @@ class Lesson(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class LessonResource(models.Model):
+    RESOURCE_TYPES = [
+        ('file', 'File Download'),
+        ('link', 'External Link'),
+        ('book_ref', 'Book Reference'),
+    ]
+
+    lesson = models.ForeignKey(Lesson, related_name="resources", on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, help_text="Instructions or context for this resource.")
+    resource_type = models.CharField(max_length=20, choices=RESOURCE_TYPES, default='file')
+    order = models.PositiveIntegerField(default=0)
+
+    file = models.FileField(upload_to='lesson_resources/', null=True, blank=True)
+    external_url = models.URLField(null=True, blank=True)
+
+    course_book = models.ForeignKey(
+        'books.CourseBook',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="lesson_references"
+    )
+
+    reading_instructions = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["order"]
+
+    def __str__(self):
+        return f"{self.title} ({self.resource_type})"
+
+    def save(self, *args, **kwargs):
+        if self.resource_type == 'book_ref' and self.course_book and self.lesson.module:
+            if self.course_book.course_id != self.lesson.module.course_id:
+                raise ValueError("Cannot link a book that is not added to this course's curriculum.")
+        super().save(*args, **kwargs)
 
 
 class Enrollment(models.Model):
@@ -366,7 +399,6 @@ class Enrollment(models.Model):
 
 
 class LessonProgress(models.Model):
-    """Tracks a user's progress and completion of a specific lesson."""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="lesson_progress", on_delete=models.CASCADE)
     lesson = models.ForeignKey(Lesson, related_name="progress_records", on_delete=models.CASCADE)
 
@@ -383,7 +415,6 @@ class LessonProgress(models.Model):
         return f"{self.user.username} - {self.lesson.title} ({status})"
 
     def mark_as_completed(self):
-        """A helper method to mark the lesson as complete."""
         if not self.is_completed:
             self.is_completed = True
             self.completed_at = timezone.now()
@@ -391,14 +422,12 @@ class LessonProgress(models.Model):
 
 
 class Certificate(models.Model):
-    """Represents a certificate awarded to a user for completing a course."""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="certificates", on_delete=models.CASCADE)
     course = models.ForeignKey(Course, related_name="certificates", on_delete=models.CASCADE)
     issue_date = models.DateField(auto_now_add=True)
     certificate_uid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
 
     class Meta:
-        # A user can only get one certificate per course
         unique_together = ("user", "course")
 
     def __str__(self):
@@ -406,7 +435,6 @@ class Certificate(models.Model):
 
 
 class Quiz(models.Model):
-    """Represents a quiz or assessment tied to a specific lesson."""
     lesson = models.ForeignKey(
         'Lesson',
         related_name='quizzes',
@@ -429,7 +457,6 @@ class Quiz(models.Model):
 
 
 class Question(models.Model):
-    """Represents a question within a Quiz."""
     QUESTION_TYPE_CHOICES = [
         ('mcq', 'Multiple Choice'),
         ('text', 'Text Answer'),
@@ -445,8 +472,8 @@ class Question(models.Model):
     class Meta:
         ordering = ['quiz', 'order']
 
+
 class Option(models.Model):
-    """Represents a choice/option for a Multiple Choice Question (MCQ)."""
     question = models.ForeignKey(Question, related_name='options', on_delete=models.CASCADE)
     text = models.CharField(max_length=500)
     is_correct = models.BooleanField(default=False)
@@ -454,8 +481,8 @@ class Option(models.Model):
     class Meta:
         unique_together = ('question', 'text')
 
+
 class QuizAttempt(models.Model):
-    """Records a specific user's attempt at a Quiz."""
     quiz = models.ForeignKey(Quiz, related_name='attempts', on_delete=models.CASCADE)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='quiz_attempts', on_delete=models.CASCADE)
     score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -470,8 +497,8 @@ class QuizAttempt(models.Model):
         unique_together = ('quiz', 'user', 'attempt_number')
         ordering = ['quiz', 'user', '-attempt_number']
 
+
 class Answer(models.Model):
-    """Records a specific user's answer for a Question within a QuizAttempt."""
     attempt = models.ForeignKey(QuizAttempt, related_name='answers', on_delete=models.CASCADE)
     question = models.ForeignKey(Question, related_name='answers', on_delete=models.CASCADE)
     selected_option = models.ForeignKey(Option, on_delete=models.SET_NULL, null=True, blank=True)
@@ -484,7 +511,6 @@ class Answer(models.Model):
 
 
 class CourseAssignment(models.Model):
-    """Assignments/Projects tied to a Module."""
     module = models.ForeignKey('Module', related_name="assignments", on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True, help_text="Full instructions for the assignment.")
@@ -496,7 +522,6 @@ class CourseAssignment(models.Model):
 
 
 class AssignmentSubmission(models.Model):
-    """User submission for a CourseAssignment."""
     SUBMISSION_STATUS_CHOICES = [
         ("pending", "Pending Review"),
         ("graded", "Graded"),

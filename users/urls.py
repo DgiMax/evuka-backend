@@ -1,5 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import SimpleRouter
+
+from .serializers import PublisherProfileManageView
 from .views import (
     RegisterView,
     VerifyEmailView,
@@ -13,8 +15,9 @@ from .views import (
     CookieTokenRefreshView,
     DashboardAPIView,
     CreatorProfileManageView,
-    StudentProfileManageView, TutorDashboardView, TutorRevenueView, TutorAnalyticsView,
+    StudentProfileManageView, TutorDashboardView, TutorAnalyticsView,
     PublicTutorViewSet, GetWebSocketTokenView, NewsletterSubscribeView, GoogleLoginView, PublicTutorProfileView,
+    PayoutMethodView, SearchInstructorsView,
 )
 
 app_name = "users"
@@ -43,13 +46,15 @@ urlpatterns = [
 
     path('profile/tutor/', CreatorProfileManageView.as_view(), name='manage-tutor-profile'),
     path('profile/student/', StudentProfileManageView.as_view(), name='manage-student-profile'),
+    path('profile/publisher/', PublisherProfileManageView.as_view(), name='publisher-profile'),
 
     path('dashboard/tutor/', TutorDashboardView.as_view(), name='tutor-dashboard'),
-    path('dashboard/revenue/', TutorRevenueView.as_view(), name='tutor-revenue'),
+    path('instructors/search/', SearchInstructorsView.as_view(), name='search-instructors'),
     path('dashboard/analytics/', TutorAnalyticsView.as_view(), name='tutor-analytics'),
     path('ws-token/', GetWebSocketTokenView.as_view(), name='get_ws_token'),
     path('auth/google/', GoogleLoginView.as_view(), name='google-login'),
     path('tutor/<str:username>/', PublicTutorProfileView.as_view(), name='public-tutor-profile'),
+    path('payout-method/', PayoutMethodView.as_view(), name='payout-method'),
 
     path('', include(router.urls)),
 ]

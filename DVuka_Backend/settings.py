@@ -4,28 +4,15 @@ from datetime import timedelta
 from dotenv import load_dotenv
 from corsheaders.defaults import default_headers
 
-# ---------------------------------------
-# Load environment variables
-# ---------------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-# ---------------------------------------
-# Core Security
-# ---------------------------------------
-# If SECRET_KEY is missing, it warns you but doesn't crash (good for testing)
 SECRET_KEY = os.getenv("SECRET_KEY", "django-insecure-test-key-change-in-prod")
-
-# We keep this strictly explicit for now
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
-
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
-# ---------------------------------------
-# Installed Apps (Restored Full List)
-# ---------------------------------------
 INSTALLED_APPS = [
-    "daphne",  # Channels (Must be top)
+    "daphne",
     "corsheaders",
     "django_filters",
     "storages",
@@ -52,12 +39,10 @@ INSTALLED_APPS = [
     'live',
     'org_community',
     'ai_assistant',
-    'help_center'
+    'help_center',
+    'books',
 ]
 
-# ---------------------------------------
-# Middleware (Restored Full List)
-# ---------------------------------------
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     'django.middleware.security.SecurityMiddleware',
@@ -65,7 +50,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'users.middleware.ActiveOrganizationMiddleware',  # Your custom middleware
+    'users.middleware.ActiveOrganizationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -90,42 +75,13 @@ TEMPLATES = [
 WSGI_APPLICATION = 'DVuka_Backend.wsgi.application'
 ASGI_APPLICATION = "DVuka_Backend.asgi.application"
 
-# ------------------------------------------------
-# 1. DATABASE CONFIGURATION
-# ------------------------------------------------
-# If POSTGRES_DB is set in .env, use PostgreSQL. Otherwise, use SQLite (Local).
-# if os.environ.get('POSTGRES_DB'):
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': os.environ.get('POSTGRES_DB'),
-#             'USER': os.environ.get('POSTGRES_USER'),
-#             'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
-#             'HOST': os.environ.get('POSTGRES_HOST'),
-#             'PORT': os.environ.get('POSTGRES_PORT'),
-#         }
-#     }
-# else:
-#     # Fallback to SQLite for local testing if no Postgres config is found
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.sqlite3',
-#             'NAME': BASE_DIR / 'db.sqlite3',
-#         }
-#     }
-
 DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
+}
 
-
-# ---------------------------------------
-# Channels / Redis
-# ---------------------------------------
-# We stick to InMemory for testing if Redis isn't found
 REDIS_HOST = os.getenv("REDIS_HOST", None)
 
 if REDIS_HOST:
@@ -142,10 +98,6 @@ else:
         "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
     }
 
-
-# ---------------------------------------
-# Auth
-# ---------------------------------------
 AUTH_USER_MODEL = "users.User"
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -157,37 +109,26 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
-    {'NAME': 'users.validators.ComplexPasswordValidator',},
+    {'NAME': 'users.validators.ComplexPasswordValidator'},
 ]
 
-# ---------------------------------------
-# Localization
-# ---------------------------------------
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Africa/Nairobi'
 USE_I18N = True
 USE_TZ = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ------------------------------------------------
-# 2. FILE STORAGE (Bunny.net Native)
-# ------------------------------------------------
 USE_S3 = os.environ.get("USE_S3", "False").lower() == "true"
 
-# --- DEFINE THESE GLOBALLY (Critical Fix) ---
-# The library looks for these in global settings, not inside the conditional block.
 BUNNY_USERNAME = os.environ.get('AWS_ACCESS_KEY_ID')
 BUNNY_PASSWORD = os.environ.get('AWS_SECRET_ACCESS_KEY')
 BUNNY_REGION = os.environ.get('BUNNY_REGION', 'uk')
 BUNNY_PULL_ZONE_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
 
 if USE_S3:
-    # --- STATIC FILES (Keep Local for Admin Speed) ---
     STATIC_URL = '/static/'
     STATIC_ROOT = BASE_DIR / "static"
 
-    # --- MEDIA FILES (Bunny.net) ---
-    # Configure Django 4.2+ STORAGES dictionary
     STORAGES = {
         "default": {
             "BACKEND": "DVuka_Backend.custom_storage.ConnectedBunnyStorage",
@@ -197,16 +138,12 @@ if USE_S3:
         },
     }
 
-    # Set the MEDIA_URL so Django knows how to display images
     BUNNY_URL = os.environ.get('BUNNY_PULL_ZONE_URL')
     if BUNNY_URL:
-        # Ensure it ends with a slash
         MEDIA_URL = f"{BUNNY_URL}/" if not BUNNY_URL.endswith("/") else BUNNY_URL
     else:
         MEDIA_URL = '/media/'
-
 else:
-    # --- LOCAL DEVELOPMENT ---
     STATIC_URL = '/static/'
     MEDIA_URL = '/media/'
     STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -221,9 +158,6 @@ else:
         },
     }
 
-# ---------------------------------------
-# REST & JWT
-# ---------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "users.authentication.CookieJWTAuthentication",
@@ -252,9 +186,6 @@ SIMPLE_JWT = {
     "AUTH_COOKIE_SAMESITE": "Lax",
 }
 
-# ---------------------------------------
-# Logging (Restored your previous config)
-# ---------------------------------------
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -311,9 +242,6 @@ JITSI_USE_SSL = os.getenv("JITSI_USE_SSL", "True").lower() == "true"
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
-# ---------------------------------------
-# CORS / CSRF / Proxy
-# ---------------------------------------
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
@@ -325,9 +253,15 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
 
-# Bunny.net Stream Config
-BUNNY_LIBRARY_ID=576084
-BUNNY_API_KEY="ad887a2c-493d-481b-9799ca4975e5-fe45-4f6f"
+BUNNY_LIBRARY_ID = 576084
+BUNNY_API_KEY = "ad887a2c-493d-481b-9799ca4975e5-fe45-4f6f"
 BUNNY_PULL_ZONE = "vz-2a442acc-7d2"
 
 LIVE_SOCKET_URL = "ws://127.0.0.1:8001"
+
+CELERY_BROKER_URL = f"redis://{REDIS_HOST or 'localhost'}:6379/0"
+CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST or 'localhost'}:6379/0"
+CELERY_ACCEPT_CONTENT = ['application/json']
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'

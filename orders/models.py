@@ -1,6 +1,8 @@
 import uuid
 from django.conf import settings
 from django.db import models
+
+from books.models import Book
 from courses.models import Course
 from events.models import Event
 from organizations.models import Organization
@@ -35,6 +37,8 @@ class Order(models.Model):
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default="unpaid")
 
     notes = models.TextField(blank=True, null=True)
+
+    is_distributed = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -78,6 +82,14 @@ class OrderItem(models.Model):
         on_delete=models.CASCADE,
         related_name="items"
     )
+
+    book = models.ForeignKey(
+        Book,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="order_items"
+    )
+
     course = models.ForeignKey(
         Course,
         null=True, blank=True,
@@ -96,6 +108,7 @@ class OrderItem(models.Model):
         on_delete=models.SET_NULL,
         related_name="order_items"
     )
+
     price = models.DecimalField(max_digits=10, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
 
@@ -104,19 +117,24 @@ class OrderItem(models.Model):
         verbose_name_plural = "Order Items"
 
     def __str__(self):
-        item_name = self.course.title if self.course \
-            else self.event.title if self.event \
-            else self.organization.name if self.organization \
-            else "Unknown Item"
-        return f"{item_name} × {self.quantity}"
+        if self.book:
+            return f"Book: {self.book.title}"
+        elif self.course:
+            return f"Course: {self.course.title}"
+        elif self.event:
+            return f"Event: {self.event.title}"
+        elif self.organization:
+            return f"Membership: {self.organization.name}"
+        else:
+            return "Unknown Item"
 
     def clean(self):
         """Ensure that exactly one purchasable item type is linked."""
-        linked_items = [self.course, self.event, self.organization]
+        linked_items = [self.course, self.event, self.organization, self.book]
 
         linked_count = sum(1 for item in linked_items if item is not None)
 
         if linked_count == 0:
-            raise ValueError("OrderItem must be linked to a course, event, or organization.")
+            raise ValueError("OrderItem must be linked to a book, course, event, or organization.")
         if linked_count > 1:
-            raise ValueError("OrderItem cannot be linked to more than one item type (course, event, or organization).")
+            raise ValueError("OrderItem cannot be linked to more than one item type.")

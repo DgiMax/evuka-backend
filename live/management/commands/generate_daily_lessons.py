@@ -1,29 +1,15 @@
 from django.core.management.base import BaseCommand
-from django.utils import timezone
-from live.models import LiveClass
+from live.tasks import trigger_daily_schedule_updates
 
 
 class Command(BaseCommand):
-    help = 'Generates upcoming lessons for ongoing live classes (maintains a 30-day buffer)'
+    help = 'Manually triggers the Celery task to regenerate future lessons.'
 
-    def handle(self, *args, **kwargs):
-        today = timezone.now().date()
+    def handle(self, *args, **options):
+        self.stdout.write("Triggering daily schedule update task...")
 
-        active_classes = LiveClass.objects.filter(
-            status__in=['scheduled', 'ongoing'],
-            recurrence_type='weekly'
-        )
+        # We call the logic directly or trigger the async task
+        # Triggering async is safer to prevent memory leaks in the CLI process
+        task = trigger_daily_schedule_updates.delay()
 
-        self.stdout.write(f"Checking {active_classes.count()} active classes for lesson generation...")
-
-        count = 0
-        for live_class in active_classes:
-            if live_class.end_date and live_class.end_date < today:
-                live_class.status = 'completed'
-                live_class.save()
-                continue
-
-            live_class.generate_lessons_batch(start_from=today, days_ahead=30)
-            count += 1
-
-        self.stdout.write(self.style.SUCCESS(f"Successfully processed {count} classes."))
+        self.stdout.write(self.style.SUCCESS(f"Task dispatched. ID: {task.id}"))

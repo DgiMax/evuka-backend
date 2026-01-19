@@ -1,15 +1,16 @@
+import uuid
+import qrcode
+from io import BytesIO
+from django.core.files.base import ContentFile
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
-from courses.models import Course
-from courses.models import Enrollment
+from courses.models import Course, Enrollment
 from organizations.models import OrgMembership
 
 
 class Event(models.Model):
-    """Main event model (e.g., webinar, workshop, course event)."""
-
     EVENT_TYPE_CHOICES = [
         ("online", "Online"),
         ("physical", "Physical"),
@@ -36,8 +37,7 @@ class Event(models.Model):
     course = models.ForeignKey(
         Course,
         on_delete=models.CASCADE,
-        related_name="events",
-        help_text="Related course for this event",
+        related_name="events"
     )
 
     title = models.CharField(max_length=255)
@@ -51,12 +51,12 @@ class Event(models.Model):
     event_status = models.CharField(
         max_length=20,
         choices=EVENT_STATUS_CHOICES,
-        default="draft",
-        help_text="Lifecycle status of the event"
+        default="draft"
     )
 
     location = models.CharField(max_length=255, blank=True)
     meeting_link = models.URLField(blank=True)
+    chat_room_id = models.CharField(max_length=100, unique=True, default=uuid.uuid4)
 
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
@@ -65,8 +65,7 @@ class Event(models.Model):
     who_can_join = models.CharField(
         max_length=20,
         choices=WHO_CAN_JOIN_CHOICES,
-        default="anyone",
-        help_text="Who is allowed to register for this event"
+        default="anyone"
     )
 
     banner_image = models.ImageField(
@@ -85,8 +84,7 @@ class Event(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
-        related_name="organized_events",
-        help_text="The instructor or course creator hosting this event",
+        related_name="organized_events"
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -109,29 +107,27 @@ class Event(models.Model):
             })
 
     def save(self, *args, **kwargs):
-        """Auto-generate slug and organizer from course creator."""
         if not self.slug:
             self.slug = slugify(self.title)
+
         if not self.organizer and self.course and hasattr(self.course, "creator"):
             self.organizer = self.course.creator
+
+        if not self.chat_room_id and self.event_type in ['online', 'hybrid']:
+            self.chat_room_id = uuid.uuid4().hex
 
         self.full_clean()
         super().save(*args, **kwargs)
 
     def get_total_confirmed_attendees(self):
-        """Counts all confirmed attendees from BOTH direct registrations and successful e-commerce orders."""
-        registrations_count = self.registrations.filter(status='registered').count()
-        orders_count = 0
-        return registrations_count + orders_count
+        return self.registrations.filter(status='registered').count()
 
     def is_full(self):
-        """Checks if the event has reached its maximum attendee capacity."""
         if self.max_attendees is None:
             return False
         return self.get_total_confirmed_attendees() >= self.max_attendees
 
     def can_user_register(self, user):
-        """Check if a user can register for this event."""
         if not self.registration_open:
             return False
         if self.registration_deadline and timezone.now() > self.registration_deadline:
@@ -167,9 +163,6 @@ class Event(models.Model):
 
     @property
     def computed_status(self):
-        """Dynamically computes real-time status based on timing and approval."""
-        from django.utils import timezone
-
         if self.event_status in ["draft", "pending_approval", "cancelled", "postponed"]:
             if self.event_status == "pending_approval":
                 now = timezone.now()
@@ -191,8 +184,6 @@ class Event(models.Model):
 
 
 class EventLearningObjective(models.Model):
-    """Learning objectives related to the event."""
-
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,
@@ -205,8 +196,6 @@ class EventLearningObjective(models.Model):
 
 
 class EventAgenda(models.Model):
-    """Agenda items for the event (timeline)."""
-
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,
@@ -225,8 +214,6 @@ class EventAgenda(models.Model):
 
 
 class EventRule(models.Model):
-    """Event rules and guidelines."""
-
     event = models.ForeignKey(
         Event,
         on_delete=models.CASCADE,
@@ -265,12 +252,40 @@ class EventRegistration(models.Model):
     )
     payment_reference = models.CharField(max_length=255, blank=True)
 
+    ticket_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    ticket_qr_code = models.ImageField(upload_to="events/tickets/qr/", blank=True, null=True)
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+
     registered_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ("event", "user")
         ordering = ["-registered_at"]
+
+    def save(self, *args, **kwargs):
+        is_new = self._state.adding
+        super().save(*args, **kwargs)
+
+        if is_new and not self.ticket_qr_code:
+            self.generate_qr_code()
+
+    def generate_qr_code(self):
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(str(self.ticket_id))
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+
+        filename = f"ticket-{self.ticket_id}.png"
+        self.ticket_qr_code.save(filename, ContentFile(buffer.getvalue()), save=True)
 
     def __str__(self):
         return f"{self.user} → {self.event} ({self.status})"

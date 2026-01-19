@@ -1,122 +1,204 @@
-from rest_framework import status, viewsets
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
+import logging
+import requests
 from decimal import Decimal
+from django.conf import settings
+from django.core.cache import cache  # <--- Added for caching bank list
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+from django.db import transaction
 
-from organizations.models import OrgMembership
-from .models import Wallet, Transaction, Payout
-from .serializers import WalletSerializer, PayoutSerializer
-from .services import initiate_payout
+from .models import Wallet, Payout
+from users.models import BankingDetails
+from .serializers import (
+    WalletSerializer,
+    BankingDetailsSerializer,
+    PayoutSerializer
+)
+
+PAYSTACK_SECRET = settings.PAYSTACK_SECRET_KEY
+logger = logging.getLogger(__name__)
 
 
-class RevenueOverviewView(APIView):
+class RevenueDashboardView(APIView):
     """
-    Returns wallet, transactions, and payout summary based on context:
-    - Personal account
-    - Organization account (tutor, admin, owner)
+    Consolidated Dashboard Data:
+    1. Wallet Balance & History
+    2. Banking Details (if verified)
+    3. Recent Payout Requests
     """
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        active_org = getattr(request, "active_organization", None)
-        response_data = {}
 
-        if hasattr(user, "wallet"):
-            response_data["personal_wallet"] = WalletSerializer(user.wallet).data
-        else:
-            response_data["personal_wallet"] = None
+        # 1. Get or Create Personal Wallet
+        wallet, _ = Wallet.objects.get_or_create(owner_user=user)
 
-        if active_org:
-            membership = OrgMembership.objects.filter(
-                user=user, organization=active_org, is_active=True
-            ).first()
+        # 2. Get Banking Details
+        banking_data = None
+        if hasattr(user, 'banking_details'):
+            banking_data = BankingDetailsSerializer(user.banking_details).data
 
-            if not membership:
-                return Response(
-                    {"detail": "You are not a member of this organization."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        # 3. Get Recent Payouts
+        recent_payouts = Payout.objects.filter(wallet=wallet).order_by('-created_at')[:5]
 
-            if hasattr(active_org, "wallet"):
-                org_wallet = active_org.wallet
-                response_data["organization_wallet"] = WalletSerializer(org_wallet).data
-            else:
-                response_data["organization_wallet"] = None
-
-            if membership.role in ["admin", "owner"]:
-                response_data["view"] = "organization_admin"
-                response_data["message"] = f"You are viewing {active_org.name}'s full financial summary."
-            else:
-                response_data["view"] = "organization_member"
-                response_data["message"] = (
-                    f"You are viewing your personal earnings under {active_org.name}."
-                )
-        else:
-            response_data["view"] = "personal"
-            response_data["message"] = "You are viewing your personal earnings."
-
-        return Response(response_data, status=status.HTTP_200_OK)
+        return Response({
+            "wallet": WalletSerializer(wallet).data,
+            "banking": banking_data,
+            "payouts": PayoutSerializer(recent_payouts, many=True).data
+        })
 
 
-class InitiatePayoutView(APIView):
+class BankListView(APIView):
     """
-    Allows a user to withdraw from their personal or organization wallet.
-    Only org admins/owners can withdraw from org wallet.
+    Fetches supported banks for KES from Paystack.
+    Caches the result for 24 hours to avoid hitting Paystack API constantly.
     """
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        # 1. Check Cache
+        cached_banks = cache.get("paystack_kenya_banks")
+        if cached_banks:
+            return Response(cached_banks)
+
+        # 2. Fetch from Paystack
+        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
+        try:
+            # We filter by currency=KES to get Kenyan banks
+            res = requests.get("https://api.paystack.co/bank?currency=KES", headers=headers)
+
+            if not res.ok:
+                logger.error(f"Paystack Bank Fetch Failed: {res.text}")
+                return Response({"error": "Failed to fetch banks"}, status=502)
+
+            data = res.json().get('data', [])
+
+            # Format strictly for frontend dropdown
+            # Paystack returns 'type' which is crucial (kepss vs mobile_money)
+            banks = [
+                {
+                    "name": b['name'],
+                    "code": b['code'],
+                    "type": b.get('type', 'kepss')  # Default to kepss if missing
+                }
+                for b in data
+            ]
+
+            # Manually insert M-Pesa at the top for better UX
+            banks.insert(0, {"name": "M-Pesa", "code": "MPESA", "type": "mobile_money"})
+
+            # 3. Cache it for 24 hours (86400 seconds)
+            cache.set("paystack_kenya_banks", banks, 60 * 60 * 24)
+
+            return Response(banks)
+
+        except Exception as e:
+            logger.error(f"Bank List Exception: {str(e)}")
+            return Response({"error": str(e)}, status=500)
+
+
+class AddBankingDetailsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        amount = Decimal(request.data.get("amount", "0"))
-        context = request.data.get("context", "personal")
         user = request.user
+        account_number = request.data.get("account_number")
+        bank_code = request.data.get("bank_code")
 
-        if amount <= 0:
-            return Response({"detail": "Invalid amount."}, status=400)
+        if not account_number or not bank_code:
+            return Response({"error": "Account Number and Bank Code are required."}, status=400)
 
-        if context == "personal":
-            if not hasattr(user, "wallet"):
-                return Response({"detail": "Wallet not found."}, status=400)
-            wallet = user.wallet
+        # --- 1. CONFIGURATION FOR KENYA (KES) ---
+        is_mpesa = bank_code == "MPESA"
 
-        elif context == "organization":
-            active_org = getattr(request, "active_organization", None)
-            if not active_org:
-                return Response(
-                    {"detail": "No active organization context."}, status=400
-                )
+        # Paystack Requirement:
+        # Kenyan Banks -> type: 'kepss'
+        # Mobile Money -> type: 'mobile_money', bank_code: 'MPESA'
 
-            membership = OrgMembership.objects.filter(
-                user=user, organization=active_org, is_active=True
-            ).first()
+        payload = {
+            "type": "mobile_money" if is_mpesa else "kepss",
+            "name": user.get_full_name() or user.username,
+            "account_number": account_number,
+            "bank_code": "MPESA" if is_mpesa else bank_code,
+            "currency": "KES"
+        }
 
-            if not membership:
-                return Response(
-                    {"detail": "You are not a member of this organization."}, status=403
-                )
-
-            if membership.role not in ["admin", "owner"]:
-                return Response(
-                    {
-                        "detail": "Only organization admins or owners can initiate organization payouts."
-                    },
-                    status=403,
-                )
-
-            if not hasattr(active_org, "wallet"):
-                return Response(
-                    {"detail": "Organization wallet not found."}, status=400
-                )
-
-            wallet = active_org.wallet
-        else:
-            return Response({"detail": "Invalid payout context."}, status=400)
+        headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
 
         try:
-            payout = initiate_payout(wallet, amount)
+            logger.debug(f"Paystack Request: {payload}")
+
+            res = requests.post("https://api.paystack.co/transferrecipient", json=payload, headers=headers)
+            res_data = res.json()
+
+            if not res.ok or not res_data.get('status'):
+                error_message = res_data.get('message', 'Verification failed')
+                logger.error(f"Paystack Verification Error: {res_data}")
+                return Response({"error": f"Paystack Error: {error_message}"}, status=400)
+
+            data = res_data['data']
+
+            # --- 2. SAVE SECURELY ---
+            BankingDetails.objects.update_or_create(
+                user=user,
+                defaults={
+                    "paystack_recipient_code": data['recipient_code'],
+                    "bank_name": data['details'].get('bank_name', 'Mobile Money'),
+                    "display_number": f"****{account_number[-4:]}",
+                    "is_verified": True
+                }
+            )
+
+            return Response({"message": "Banking details saved successfully!"})
+
+        except Exception as e:
+            logger.exception("Add Banking Details Error")
+            return Response({"error": str(e)}, status=500)
+
+
+class RequestPayoutView(APIView):
+    """
+    Allows a user to withdraw funds.
+    Validates balance and banking details before locking funds.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        amount = Decimal(request.data.get('amount', '0'))
+
+        # 1. Basic Validation
+        if amount < 100:
+            return Response({"error": "Minimum withdrawal is KES 100"}, status=400)
+
+        # 2. Check Wallet Balance
+        wallet = get_object_or_404(Wallet, owner_user=user)
+
+        if wallet.balance < amount:
+            return Response({"error": "Insufficient balance"}, status=400)
+
+        # 3. Check Banking Details
+        if not hasattr(user, 'banking_details') or not user.banking_details.paystack_recipient_code:
+            return Response({"error": "Please add verified banking details first."}, status=400)
+
+        # 4. Process Withdrawal (Atomic Transaction)
+        try:
+            # The .withdraw method handles the locking (select_for_update)
+            # and creates the Transaction record.
+            wallet.withdraw(amount, description="Payout Request")
+
+            # Create the Payout Tracking Record
+            payout = Payout.objects.create(
+                wallet=wallet,
+                amount=amount,
+                status='pending'
+            )
+
             return Response(PayoutSerializer(payout).data, status=201)
-        except ValueError as e:
-            return Response({"detail": str(e)}, status=400)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)

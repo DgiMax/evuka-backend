@@ -5,6 +5,11 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.db.models import Sum, Case, When
+from rest_framework import generics, permissions, status
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
 
 from courses.models import Lesson, LessonProgress, Course, Enrollment, Certificate
 from courses.serializers import CourseListSerializer
@@ -13,7 +18,8 @@ from live.models import LiveLesson
 from organizations.models import OrgMembership
 from organizations.serializers import OrgMembershipSerializer
 from revenue.models import Transaction, Payout, Wallet
-from users.models import CreatorProfile, Subject, StudentProfile, TutorPayoutMethod, NewsletterSubscriber
+from users.models import CreatorProfile, Subject, StudentProfile, NewsletterSubscriber, \
+    BankingDetails, PublisherProfile
 
 User = get_user_model()
 signer = TimestampSigner()
@@ -464,7 +470,6 @@ class DashboardLiveLessonSerializer(serializers.ModelSerializer):
             "start_time",
             "end_time",
             "is_active",
-            "hls_playback_url",
             "chat_room_id"
         ]
 
@@ -479,12 +484,6 @@ class PayoutSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payout
         fields = ["id", "amount", "status", "reference", "created_at", "processed_at"]
-
-
-class TutorPayoutMethodSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = TutorPayoutMethod
-        fields = ["id", "method_type", "display_details", "is_active"]
 
 
 class WalletSerializer(serializers.ModelSerializer):
@@ -612,3 +611,86 @@ class PublicTutorProfileSerializer(serializers.ModelSerializer):
         if total_ratings_count > 0:
             return round(total_rating_sum / total_ratings_count, 1)
         return 0.0
+
+
+class PublisherProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PublisherProfile
+        fields = [
+            'id',
+            'display_name',
+            'bio',
+            'profile_image',
+            'headline',
+            'intro_video',
+            'website',
+            'is_verified'
+        ]
+        read_only_fields = ['is_verified']
+
+    def create(self, validated_data):
+        return PublisherProfile.objects.create(**validated_data)
+
+
+class BankingDetailsInputSerializer(serializers.Serializer):
+    """
+    Validates the raw data coming from the frontend.
+    """
+    account_number = serializers.CharField(max_length=50, required=True)
+    account_name = serializers.CharField(max_length=200, required=True)
+    bank_code = serializers.CharField(
+        max_length=50,
+        required=True,
+        help_text="Use 'MPESA' for mobile money or the bank's CBC code"
+    )
+
+class BankingDetailsViewSerializer(serializers.ModelSerializer):
+    """
+    Returns the safe, saved details for the dashboard.
+    """
+    class Meta:
+        model = BankingDetails
+        fields = ['bank_name', 'display_number', 'is_verified', 'updated_at']
+
+
+class PublisherProfileManageView(generics.RetrieveUpdateAPIView, generics.CreateAPIView):
+    """
+    Manages Publisher Onboarding.
+    - POST: Registers the user as a publisher.
+    - GET/PUT: Manages profile details.
+    """
+    serializer_class = PublisherProfileSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        # Get the profile for the current user
+        return get_object_or_404(PublisherProfile, user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        # Check if profile already exists to prevent duplicates
+        if hasattr(request.user, 'publisher_profile'):
+            return Response(
+                {"error": "You already have a publisher profile."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+        # Activate the 'is_publisher' role flag on the User model
+        user = self.request.user
+        if not user.is_publisher:
+            user.is_publisher = True
+            user.save(update_fields=['is_publisher'])
+
+
+class InstructorSearchSerializer(serializers.ModelSerializer):
+    display_name = serializers.CharField(source='creator_profile.display_name', read_only=True)
+    profile_image = serializers.ImageField(source='creator_profile.profile_image', read_only=True)
+    headline = serializers.CharField(source='creator_profile.headline', read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'display_name', 'profile_image', 'headline')

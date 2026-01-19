@@ -1,49 +1,65 @@
-# courses/signals.py (NEW FILE)
-
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
-from .models import Course, Enrollment
+from django.utils import timezone
+from courses.models import Course
+from events.models import Event
+from .models import LiveClass
 
+
+@receiver(pre_save, sender=Course)
+def track_course_status_change(sender, instance, **kwargs):
+    if instance.pk:
+        try:
+            old_instance = Course.objects.get(pk=instance.pk)
+            instance._old_status = old_instance.status
+        except Course.DoesNotExist:
+            instance._old_status = None
+    else:
+        instance._old_status = None
 
 
 @receiver(post_save, sender=Course)
-def auto_enroll_org_members(sender, instance, created, **kwargs):
-    """
-    Auto-enrolls active student members of the related organization
-    when a new course is created or published.
-    """
-    from organizations.models import OrgMembership
+def handle_course_status_cascading(sender, instance, created, **kwargs):
+    old_status = getattr(instance, '_old_status', None)
+    new_status = instance.status
 
-    # 1. Only proceed if the course belongs to an organization and is published/created
-    if not instance.organization:
+    if old_status == new_status:
         return
 
-    # Check for relevant status changes (e.g., draft -> published)
-    is_published = instance.status == 'published'
-    is_level_required = bool(instance.org_level)
+    if new_status in ['archived', 'draft']:
+        live_classes = LiveClass.objects.filter(course=instance)
+        live_classes.update(status=new_status)
 
-    if not is_published:
-        return
+        for live_class in live_classes:
+            live_class.lessons.filter(
+                start_datetime__gt=timezone.now(),
+                is_cancelled=False
+            ).update(is_cancelled=True)
 
-    # 2. Find all active student members of this organization
-    members_qs = OrgMembership.objects.filter(
-        organization=instance.organization,
-        is_active=True,
-        role='student'
-    )
+        target_event_status = 'draft' if new_status == 'draft' else 'cancelled'
 
-    # 3. Apply level filtering before iterating
-    if is_level_required:
-        members_qs = members_qs.filter(level=instance.org_level)
-
-    # Iterate and enroll
-    for membership in members_qs:
-        # Create enrollment for the member
-        Enrollment.objects.get_or_create(
-            user=membership.user,
+        Event.objects.filter(
             course=instance,
-            defaults={
-                'role': 'student',
-                'status': 'active'
-            }
+            start_time__gt=timezone.now(),
+            event_status__in=['approved', 'scheduled', 'pending_approval']
+        ).update(event_status=target_event_status)
+
+    elif new_status == 'published' and old_status in ['archived', 'draft']:
+        live_classes = LiveClass.objects.filter(
+            course=instance,
+            status__in=['archived', 'draft']
         )
+
+        if live_classes.exists():
+            live_classes.update(status='scheduled')
+
+            from .services import LiveClassScheduler
+
+            for live_class in live_classes:
+                live_class.lessons.filter(
+                    start_datetime__gt=timezone.now(),
+                    is_cancelled=True
+                ).update(is_cancelled=False)
+
+                scheduler = LiveClassScheduler(live_class)
+                scheduler.schedule_lessons(months_ahead=3)

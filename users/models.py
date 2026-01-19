@@ -11,6 +11,7 @@ class User(AbstractUser):
     # Platform-wide role flags
     is_tutor = models.BooleanField(default=False)
     is_student = models.BooleanField(default=False)
+    is_publisher = models.BooleanField(default=False)
 
     def __str__(self):
         return self.username
@@ -84,50 +85,85 @@ class CreatorProfile(models.Model):
         return f"Creator: {self.display_name} ({self.user.username})"
 
 
-class TutorPayoutMethod(models.Model):
-    class MethodType(models.TextChoices):
-        BANK_ACCOUNT = 'bank', 'Bank Account'
-        MOBILE_MONEY = 'mobile', 'Mobile Money'
-
-    profile = models.ForeignKey(
-        CreatorProfile,
+class PublisherProfile(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="payout_methods"
-    )
-    method_type = models.CharField(
-        max_length=20,
-        choices=MethodType.choices,
-        help_text="The type of payout method."
+        related_name="publisher_profile"
     )
 
-    paystack_recipient_code = models.CharField(
-        max_length=100,
-        unique=True,
-        help_text="Paystack's 'recipient_code' (e.g., RCP_...)"
+    display_name = models.CharField(
+        max_length=255,
+        help_text="The name displayed to buyers (e.g. 'Penguin Books' or 'John Doe')"
     )
 
-    display_details = models.CharField(
-        max_length=100,
-        help_text="Masked details for display, e.g., 'Access Bank (***123)'"
+    bio = models.TextField(
+        blank=True,
+        help_text="Detailed about section for the publisher/author."
     )
 
-    is_active = models.BooleanField(
+    is_verified = models.BooleanField(
         default=False,
-        help_text="Is this the default method for payouts?"
+        help_text="Set to True once the publisher is KYC approved."
     )
 
-    class Meta:
-        verbose_name = "Tutor Payout Method"
-        verbose_name_plural = "Tutor Payout Methods"
+    profile_image = models.ImageField(
+        upload_to='publisher_logos/',
+        null=True,
+        blank=True,
+        help_text="Company Logo or Author Headshot."
+    )
+
+    headline = models.CharField(
+        max_length=250,
+        blank=True,
+        help_text="A short, catchy tagline. e.g., 'Publishing African Stories since 2010'"
+    )
+
+    intro_video = models.FileField(
+        upload_to='publisher_videos/',
+        max_length=500,
+        blank=True,
+        null=True,
+        help_text="Optional: Brand intro video."
+    )
+
+    website = models.URLField(
+        blank=True,
+        null=True,
+        help_text="External website link."
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.profile.display_name} - {self.get_method_type_display()} ({self.display_details})"
+        return f"Publisher: {self.display_name} ({self.user.username})"
 
-    def save(self, *args, **kwargs):
-        if self.is_active:
-            TutorPayoutMethod.objects.filter(profile=self.profile, is_active=True).exclude(pk=self.pk).update(
-                is_active=False)
-        super().save(*args, **kwargs)
+
+class BankingDetails(models.Model):
+    """
+    Stores payment destination tokens securely.
+    We DO NOT store raw bank account numbers here.
+    """
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="banking_details"
+    )
+
+    # The Token from Paystack (e.g., "RCP_1a2b3c4d")
+    paystack_recipient_code = models.CharField(max_length=50, unique=True)
+
+    # Metadata for display only (e.g. "Equity Bank", "****9876")
+    bank_name = models.CharField(max_length=100)
+    display_number = models.CharField(max_length=50)
+
+    is_verified = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} - {self.bank_name} ({self.display_number})"
 
 
 class StudentProfile(models.Model):

@@ -1,16 +1,19 @@
 from courses.models import Enrollment
 from events.models import EventRegistration
 from organizations.models import OrgMembership
+# --- NEW IMPORTS ---
+from books.models import BookAccess
+from revenue.services import distribute_order_revenue
+# -------------------
 from .models import update_order_payment_status
 
 
 def handle_successful_payment(payment):
     """
-    Centralized logic to grant access (enrollments, events, memberships)
+    Centralized logic to grant access (enrollments, events, memberships, books)
     after a payment is confirmed (whether Free or Paid).
     """
     # 1. Update the Order status to 'paid'
-    # (This helper function updates the Order model based on the Payment)
     update_order_payment_status(payment.order)
 
     order = payment.order
@@ -46,7 +49,16 @@ def handle_successful_payment(payment):
             )
             action_performed.append(f"Event '{item.event.title}' registration")
 
-        # --- C. ORGANIZATION MEMBERSHIP ---
+        # --- C. BOOK ACCESS (New) ---
+        elif item.book:
+            BookAccess.objects.get_or_create(
+                user=order.user,
+                book=item.book,
+                defaults={'source': 'purchase'}
+            )
+            action_performed.append(f"Book '{item.book.title}' access")
+
+        # --- D. ORGANIZATION MEMBERSHIP ---
         elif item.organization and membership_id:
             try:
                 # We filter by ID and Org to ensure security
@@ -54,8 +66,6 @@ def handle_successful_payment(payment):
                     id=membership_id,
                     organization=item.organization
                 )
-                # Only activate if it's currently pending or if this is a free upgrade
-                # (You might want to add status checks here if needed)
                 membership.activate_membership()
                 action_performed.append(f"Organization '{item.organization.name}' membership activation")
 
@@ -64,10 +74,14 @@ def handle_successful_payment(payment):
                     f"Organization '{item.organization.name}' membership activation failed (record missing)"
                 )
 
-    # 3. Construct the success message
+    # 3. TRIGGER REVENUE DISTRIBUTION (The Missing Link)
+    # This calls the "Accountant" to split the money to wallets
+    distribute_order_revenue(order)
+
+    # 4. Construct the success message
     if action_performed:
-        success_message = "Payment verified successfully. " + " and ".join(action_performed) + "."
+        success_message = "Payment verified. " + ", ".join(action_performed) + "."
     else:
-        success_message = "Payment verified successfully, but no specific enrollment action was performed."
+        success_message = "Payment verified, but no specific enrollment action was performed."
 
     return success_message

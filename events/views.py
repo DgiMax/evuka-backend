@@ -1,24 +1,32 @@
-from datetime import timedelta
+import json
+from datetime import datetime, timedelta
+from django.http import HttpResponse
 from django.utils import timezone
 from django.db.models import Q, Count
-
-from rest_framework import viewsets, permissions, status, generics
+from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.generics import get_object_or_404
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly
+from livekit import api
 
 from courses.models import Course, OrgCategory, GlobalSubCategory
-from organizations.models import Organization
 from .models import Event, EventRegistration
 from .serializers import (
     EventSerializer,
     EventListSerializer,
     EventRegistrationSerializer,
-    TutorEventDetailSerializer, CreateEventSerializer, FeaturedEventSerializer,
+    TutorEventDetailSerializer,
+    CreateEventSerializer,
+    FeaturedEventSerializer,
 )
+from .utils import generate_pdf_ticket
+
+LK_API_KEY = "devkey"
+LK_API_SECRET = "SecureLiveKitSecretKey2026EvukaProject"
+LK_SERVER_URL = "ws://127.0.0.1:7880"
+
 
 class BestUpcomingEventView(APIView):
     permission_classes = [AllowAny]
@@ -62,25 +70,16 @@ class BestUpcomingEventView(APIView):
 
 
 class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Handles all PUBLIC-FACING event logic.
-    STRICTLY limits results to future/ongoing events only.
-    """
     serializer_class = EventSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     lookup_field = "slug"
 
     def get_serializer_class(self):
-        """Use lightweight serializer for list view."""
         if self.action == "list":
             return EventListSerializer
         return EventSerializer
 
     def get_queryset(self):
-        """
-        Context-aware queryset filtering.
-        STRICT: Only shows events where end_time >= now.
-        """
         active_org = getattr(self.request, "active_organization", None)
         now = timezone.now()
 
@@ -154,24 +153,79 @@ class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated])
+    def join(self, request, slug=None):
+        event = self.get_object()
+        user = request.user
+
+        if not EventRegistration.objects.filter(event=event, user=user, status__in=['registered', 'attended']).exists():
+            if event.organizer != user:
+                return Response({"error": "You are not registered for this event."}, status=403)
+
+        if event.event_type == 'physical':
+            return Response({"error": "This is a physical event. Please use your ticket to check in."}, status=400)
+
+        now = timezone.now()
+        buffer_time = event.start_time - timedelta(minutes=20)
+
+        if event.organizer != user:
+            if now < buffer_time:
+                minutes_left = int((buffer_time - now).total_seconds() / 60)
+                return Response({
+                    "error": "too_early",
+                    "message": f"Event room opens in {minutes_left} minutes.",
+                    "open_at": buffer_time
+                }, status=403)
+
+        if event.meeting_link and not event.chat_room_id:
+            return Response({"type": "external", "url": event.meeting_link})
+
+        participant_identity = str(user.id)
+        participant_name = user.get_full_name() or user.username
+        is_host = (user == event.organizer)
+
+        token = api.AccessToken(LK_API_KEY, LK_API_SECRET) \
+            .with_identity(participant_identity) \
+            .with_name(participant_name) \
+            .with_grants(api.VideoGrants(
+            room_join=True,
+            room=event.chat_room_id,
+            can_publish=is_host,
+            can_subscribe=True,
+        ))
+
+        return Response({
+            "type": "native",
+            "token": token.to_jwt(),
+            "url": LK_SERVER_URL,
+            "is_host": is_host
+        })
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAuthenticated])
+    def ticket(self, request, slug=None):
+        event = self.get_object()
+
+        if event.event_type == 'online':
+            return Response({"error": "Online events do not require a physical ticket."}, status=400)
+
+        try:
+            reg = EventRegistration.objects.get(event=event, user=request.user, status='registered')
+        except EventRegistration.DoesNotExist:
+            return Response({"error": "No active registration found."}, status=404)
+
+        pdf_buffer = generate_pdf_ticket(reg)
+
+        filename = f"Ticket_{event.slug}_{reg.ticket_id.hex[:6]}.pdf"
+        response = HttpResponse(pdf_buffer, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
 
 class TutorEventViewSet(viewsets.ModelViewSet):
-    """
-    A complete ViewSet for Tutors/Admins to manage their events.
-    Handles:
-    - List (GET /tutor/events/) -> "My Events" page
-    - Create (POST /tutor/events/)
-    - Retrieve (GET /tutor/events/<slug>/) -> Preview/Edit page
-    - Update (PUT /tutor/events/<slug>/)
-    - Delete (DELETE /tutor/events/<slug>/)
-    - Attendees (GET /tutor/events/<slug>/attendees/)
-    - Form Options (GET /tutor/events/form_options/)
-    """
     permission_classes = [IsAuthenticated]
     lookup_field = "slug"
 
     def get_serializer_class(self):
-        """Use the correct serializer for the action."""
         if self.action == 'list':
             return EventListSerializer
         if self.action in ['create', 'update', 'partial_update']:
@@ -184,10 +238,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
         return TutorEventDetailSerializer
 
     def get_queryset(self):
-        """
-        Returns events owned by the tutor or manageable by them (if org admin).
-        This powers the "My Events" page and handles search/filter.
-        """
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
 
@@ -218,7 +268,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        """Copied from EventCreateView"""
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
         course = serializer.validated_data["course"]
@@ -240,7 +289,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
         serializer.save(organizer=course.creator)
 
     def perform_update(self, serializer):
-        """Copied from EventRetrieveUpdateView"""
         user = self.request.user
         event = self.get_object()
         course = serializer.validated_data.get("course", event.course)
@@ -264,7 +312,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"])
     def attendees(self, request, slug=None):
-        """Allows organizer or org admins to view attendees."""
         event = self.get_object()
         active_org = getattr(self.request, "active_organization", None)
         user = request.user
@@ -285,10 +332,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def form_options(self, request):
-        """
-        Returns context-aware course options and event form dropdown options.
-        MERGED from EventFormOptionsView.
-        """
         user = request.user
         active_org = getattr(request, "active_organization", None)
 
@@ -299,12 +342,23 @@ class TutorEventViewSet(viewsets.ModelViewSet):
             is_admin_or_owner = membership and membership.role in ["admin", "owner"]
 
             if is_admin_or_owner:
-                courses = Course.objects.filter(organization=active_org)
+                courses = Course.objects.filter(
+                    organization=active_org,
+                    status='published'
+                )
             else:
-                courses = Course.objects.filter(organization=active_org, creator=user)
+                courses = Course.objects.filter(
+                    organization=active_org,
+                    creator=user,
+                    status='published'
+                )
         else:
             is_admin_or_owner = False
-            courses = Course.objects.filter(creator=user, organization__isnull=True)
+            courses = Course.objects.filter(
+                creator=user,
+                organization__isnull=True,
+                status='published'
+            )
 
         event_type_choices = [
             {"value": key, "label": label} for key, label in Event.EVENT_TYPE_CHOICES
@@ -350,10 +404,6 @@ class TutorEventViewSet(viewsets.ModelViewSet):
 
 
 class EventFilterOptionsView(APIView):
-    """
-    Returns filter options for the PUBLIC event list sidebar.
-    This view is unchanged and still needed.
-    """
     permission_classes = [AllowAny]
 
     def get(self, request):

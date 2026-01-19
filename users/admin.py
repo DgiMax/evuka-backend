@@ -8,8 +8,7 @@ from .models import (
     CreatorProfile,
     StudentProfile,
     Subject,
-    TutorPayoutMethod,
-    NewsletterSubscriber,
+    NewsletterSubscriber, PublisherProfile,
 )
 
 User = get_user_model()
@@ -137,20 +136,15 @@ class SubjectAdmin(admin.ModelAdmin):
     prepopulated_fields = {'slug': ('name',)}
 
 
-@admin.register(TutorPayoutMethod)
-class TutorPayoutMethodAdmin(admin.ModelAdmin):
-    list_display = ("profile", "method_type", "is_active", "display_details")
-    list_filter = ("method_type", "is_active", "profile__is_verified")
-    search_fields = (
-        "profile__user__username", "profile__display_name", "display_details"
-    )
-    autocomplete_fields = ("profile",)
-    readonly_fields = ("paystack_recipient_code",)
-
-
 @admin.register(NewsletterSubscriber)
 class NewsletterSubscriberAdmin(admin.ModelAdmin):
     list_display = ("email", "is_active", "created_at", "user")
     list_filter = ("is_active", "created_at")
     search_fields = ("email", "user__username")
     autocomplete_fields = ("user",)
+
+
+@admin.register(PublisherProfile)
+class PublisherProfileAdmin(admin.ModelAdmin):
+    list_display = ('display_name', 'user', 'is_verified')
+    search_fields = ('display_name', 'user__username', 'user__email')

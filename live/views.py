@@ -1,27 +1,30 @@
-import uuid
-from datetime import datetime, timedelta, date
-import calendar
+import json
+from datetime import datetime, timedelta
 from django.db import transaction
 from django.conf import settings
 from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.filters import SearchFilter, OrderingFilter
+from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
+from livekit import api
 
-from courses.views import TutorCourseViewSet
 from organizations.models import OrgMembership
 from courses.models import Enrollment
-from .models import LiveClass, LiveLesson
+from .models import LiveClass, LiveLesson, LessonResource
 from .serializers import (
     LiveClassSerializer,
     LiveLessonSerializer,
-    CourseWithLiveClassesSerializer,
-    LiveLessonCreateSerializer
+    LessonResourceSerializer,
+    CourseWithLiveClassesSerializer
 )
+from .services import LiveClassScheduler
 from .permissions import IsTutorOrOrgAdmin
-from .utils.tokens import generate_live_service_token
-from .utils.bunny import get_or_create_bunny_stream
+
+LK_API_KEY = "devkey"
+LK_API_SECRET = "SecureLiveKitSecretKey2026EvukaProject"
+LK_SERVER_URL = "ws://127.0.0.1:7880"
 
 
 class LiveClassViewSet(viewsets.ModelViewSet):
@@ -32,11 +35,6 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ["title", "description"]
     ordering_fields = ["start_date", "created_at"]
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context.update({"request": self.request})
-        return context
 
     def get_queryset(self):
         user = self.request.user
@@ -56,86 +54,32 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
+
         instance = serializer.save(
             creator=user,
             organization=active_org,
             creator_profile=getattr(user, "creator_profile", None),
         )
 
-        if instance.recurrence_type == "weekly" and instance.recurrence_days:
-            instance.generate_lessons_batch(start_from=instance.start_date, days_ahead=30)
-        elif instance.recurrence_type == "none":
-            self._generate_one_time_lesson(instance)
+        scheduler = LiveClassScheduler(instance)
+        scheduler.schedule_lessons(months_ahead=3)
 
     @transaction.atomic
     def perform_update(self, serializer):
         instance = serializer.save()
-        mode = instance.recurrence_update_mode
-
-        if instance.recurrence_type == "weekly" and instance.recurrence_days:
-            if mode == "all":
-                instance.lessons.all().delete()
-                instance.generate_lessons_batch(start_from=instance.start_date, days_ahead=30)
-            elif mode == "future":
-                instance.lessons.filter(date__gte=date.today()).delete()
-                instance.generate_lessons_batch(start_from=date.today(), days_ahead=30)
-
-        elif instance.recurrence_type == "none":
-            instance.lessons.filter(date__gte=date.today()).delete()
-
-        if mode != 'none':
-            instance.recurrence_update_mode = 'none'
-            instance.save(update_fields=['recurrence_update_mode'])
-
-    def _generate_one_time_lesson(self, live_class):
-        start_date = live_class.start_date
-        weekday = calendar.day_name[start_date.weekday()]
-        time_str = live_class.recurrence_days.get(weekday)
-
-        if not time_str:
-            time_str = live_class.recurrence_days.get('time')
-
-        if time_str:
-            start_time = datetime.strptime(time_str, "%H:%M").time()
-            end_time = (datetime.combine(date.today(), start_time) +
-                        timedelta(minutes=live_class.lesson_duration)).time()
-
-            LiveLesson.objects.create(
-                live_class=live_class,
-                title=f"{live_class.title}",
-                date=start_date,
-                start_time=start_time,
-                end_time=end_time
-            )
+        scheduler = LiveClassScheduler(instance)
+        scheduler.update_schedule()
 
 
 class LiveLessonViewSet(
-    mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
     mixins.UpdateModelMixin,
     mixins.ListModelMixin,
-    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
     queryset = LiveLesson.objects.select_related("live_class")
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_serializer_class(self):
-        if self.action == 'create':
-            return LiveLessonCreateSerializer
-        return LiveLessonSerializer
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context.update({"request": self.request})
-        return context
-
-    def get_permissions(self):
-        if self.action in ["create", "update", "partial_update", "destroy"]:
-            self.permission_classes = [permissions.IsAuthenticated, IsTutorOrOrgAdmin]
-        else:
-            self.permission_classes = [permissions.IsAuthenticated]
-        return super().get_permissions()
+    serializer_class = LiveLessonSerializer
 
     def get_queryset(self):
         user = self.request.user
@@ -153,103 +97,141 @@ class LiveLessonViewSet(
                 return qs.filter(live_class__organization=active_org, live_class__creator=user)
             return qs.filter(live_class__creator=user, live_class__organization__isnull=True)
 
-        try:
-            enrolled_course_ids = Enrollment.objects.filter(user=user, status="active").values_list("course_id",
-                                                                                                    flat=True)
-            qs = LiveLesson.objects.filter(live_class__course_id__in=enrolled_course_ids)
-            if active_org:
-                return qs.filter(live_class__organization=active_org)
-            return qs.filter(live_class__organization__isnull=True)
-        except ImportError:
-            return LiveLesson.objects.none()
+        enrolled_course_ids = Enrollment.objects.filter(
+            user=user, status="active"
+        ).values_list("course_id", flat=True)
 
-    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+        qs = LiveLesson.objects.filter(live_class__course_id__in=enrolled_course_ids)
+        if active_org:
+            return qs.filter(live_class__organization=active_org)
+        return qs.filter(live_class__organization__isnull=True)
+
+    @action(detail=True, methods=["get"])
     def join(self, request, pk=None):
+        lesson = self.get_object()
+        user = request.user
+        is_host = (user == lesson.live_class.creator)
+
+        if not is_host:
+            now = datetime.now(tz=lesson.start_datetime.tzinfo)
+            buffer_start = lesson.start_datetime - timedelta(minutes=20)
+
+            if now < buffer_start:
+                time_left = int((buffer_start - now).total_seconds() / 60)
+                return Response({
+                    "error": "too_early",
+                    "message": f"Class opens in {time_left} minutes",
+                    "open_at": buffer_start
+                }, status=403)
+
+        participant_identity = str(user.id)
+        participant_name = user.get_full_name() or user.username
+        room_name = lesson.chat_room_id
+        host_identity = str(lesson.live_class.creator.id)
+
+        metadata = json.dumps({
+            "mic_locked": lesson.is_mic_locked,
+            "camera_locked": lesson.is_camera_locked,
+            "is_host": is_host
+        })
+
+        token = api.AccessToken(LK_API_KEY, LK_API_SECRET) \
+            .with_identity(participant_identity) \
+            .with_name(participant_name) \
+            .with_metadata(metadata) \
+            .with_grants(api.VideoGrants(
+            room_join=True,
+            room=room_name,
+            can_publish=True,
+            can_subscribe=True,
+            can_publish_data=True,
+        ))
+
+        resources = lesson.resources.all()
+        resource_data = LessonResourceSerializer(resources, many=True).data
+
+        return Response({
+            "token": token.to_jwt(),
+            "url": LK_SERVER_URL,
+            "is_host": is_host,
+            "host_identity": host_identity,
+            "effective_end_datetime": lesson.effective_end_datetime,
+            "resources": resource_data
+        })
+
+    @action(detail=True, methods=["post"])
+    def extend_time(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator:
+            return Response({"error": "Unauthorized"}, status=403)
+
+        add_minutes = int(request.data.get("minutes", 15))
+
+        if lesson.extension_minutes + add_minutes > 60:
+            return Response({"error": "Cannot extend more than 1 hour total"}, status=400)
+
+        lesson.extension_minutes += add_minutes
+        lesson.save()
+
+        return Response({"new_end_time": lesson.effective_end_datetime})
+
+    @action(detail=True, methods=["post"])
+    def toggle_lock(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator:
+            return Response({"error": "Unauthorized"}, status=403)
+
+        target = request.data.get("target")
+        state = request.data.get("locked")
+
+        if target == 'mic':
+            lesson.is_mic_locked = state
+        elif target == 'camera':
+            lesson.is_camera_locked = state
+        lesson.save()
+
+        lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+        room_meta = json.dumps({
+            "mic_locked": lesson.is_mic_locked,
+            "camera_locked": lesson.is_camera_locked
+        })
+
         try:
-            lesson = self.get_object()
-            user = request.user
-            live_class = lesson.live_class
+            lkapi.room.update_room_metadata(lesson.chat_room_id, metadata=room_meta)
+        except Exception:
+            pass
 
-            # 1. Determine Permission
-            is_creator = (user == live_class.creator)
-            if live_class.organization and live_class.organization.owner == user:
-                is_creator = True
+        return Response({"status": "updated"})
 
-            if not is_creator:
-                has_enrollment = Enrollment.objects.filter(
-                    user=user,
-                    course=live_class.course,
-                    status="active"
-                ).exists()
+    @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    def upload_resource(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator:
+            return Response({"error": "Unauthorized"}, status=403)
 
-                if not has_enrollment:
-                    return Response(
-                        {"detail": "You must be enrolled in this course to join."},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+        file = request.FILES.get('file')
+        title = request.data.get('title', file.name)
 
-            role = "host" if is_creator else "student"
+        resource = LessonResource.objects.create(lesson=lesson, file=file, title=title)
+        return Response(LessonResourceSerializer(resource).data)
 
-            # 2. Generate WebSocket Token
-            ws_token = generate_live_service_token(
-                user=user,
-                room_id=lesson.chat_room_id,
-                role=role
+    @action(detail=False, methods=["post"], url_path="moderate/mute")
+    def mute_participant(self, request):
+        room_name = request.data.get("room")
+        identity = request.data.get("identity")
+
+        if not request.user.is_staff:
+            return Response({"error": "Unauthorized"}, status=403)
+
+        try:
+            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+            lkapi.room.remove_participant(
+                room=room_name,
+                identity=identity
             )
-
-            # 3. Generate Stream Key (Internal)
-            # We no longer ask Bunny. We generate a unique ID for our Nginx server.
-            if not lesson.stream_key:
-                # Create a simple unique string (e.g., "lesson_25_a1b2c3")
-                lesson.stream_key = f"lesson_{lesson.id}_{uuid.uuid4().hex[:6]}"
-                lesson.save()
-
-            # 4. Configuration for Self-Hosted Media Server
-            # This IP is your current Public/Hotspot IP where Docker is running.
-            SERVER_IP = "89.187.169.205"
-
-            video_config = {}
-
-            if role == "host":
-                video_config = {
-                    "mode": "broadcast",
-                    "protocol": "rtmp",
-                    # The frontend sends data to FastAPI via WebSocket.
-                    # FastAPI pushes to this URL. We send it here just for reference/debugging.
-                    "ingest_url": f"rtmp://{SERVER_IP}/live",
-                    "stream_key": lesson.stream_key,
-                }
-            else:
-                video_config = {
-                    "mode": "playback",
-                    "protocol": "hls",
-                    # Student watches directly from your Nginx container's HTTP port (8080)
-                    "playback_url": f"http://{SERVER_IP}:8090/hls/{lesson.stream_key}.m3u8",
-                }
-
-            response_data = {
-                "lesson_id": lesson.id,
-                "chat_room_id": lesson.chat_room_id,
-                "user_role": role,
-                "live_service": {
-                    "url": getattr(settings, "LIVE_SOCKET_URL", "ws://127.0.0.1:8001"),
-                    "token": ws_token
-                },
-                "video": video_config,
-                "meta": {
-                    "title": lesson.title,
-                    "tutor_name": live_class.creator.get_full_name()
-                }
-            }
-
-            return Response(response_data, status=status.HTTP_200_OK)
-
+            return Response({"status": "participant removed"})
         except Exception as e:
-            print(f"Join Error: {e}")
-            return Response(
-                {"detail": "Unable to join live session."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({"error": str(e)}, status=500)
 
 
 class AllLiveClassesViewSet(viewsets.ReadOnlyModelViewSet):
@@ -257,6 +239,11 @@ class AllLiveClassesViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        tutor_course_view = TutorCourseViewSet(request=self.request)
-        base_course_qs = tutor_course_view.get_queryset()
-        return base_course_qs.prefetch_related('live_classes').order_by('-created_at')
+        user = self.request.user
+        enrolled_courses = Enrollment.objects.filter(
+            user=user, status='active'
+        ).values_list('course', flat=True)
+
+        return LiveClass.objects.filter(
+            course__in=enrolled_courses
+        ).prefetch_related('lessons').order_by('-created_at')

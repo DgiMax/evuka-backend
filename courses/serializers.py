@@ -6,26 +6,31 @@ from django.utils import timezone
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.conf import settings
+from django.db.models import Sum, Case, When
+from django.http import QueryDict
 
-from .models import Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalSubCategory, LessonProgress, Quiz, \
-    Question, Option, CourseAssignment, QuizAttempt, Answer, AssignmentSubmission, Enrollment, CourseNote, \
-    CourseQuestion, CourseReply
+from .models import (
+    Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalSubCategory,
+    LessonProgress, Quiz, Question, Option, CourseAssignment, QuizAttempt,
+    Answer, AssignmentSubmission, Enrollment, CourseNote, CourseQuestion,
+    CourseReply, LessonResource
+)
 from users.models import CreatorProfile
 from live.serializers import LiveClassSerializer, LiveClassMinimalSerializer
-from django.db.models import Sum, Case, When
-
+from books.serializers import BookListSerializer
 
 User = get_user_model()
 
 
 class InstructorSummarySerializer(serializers.ModelSerializer):
-    """Basic instructor info used across views."""
     username = serializers.CharField(source='user.username', read_only=True)
     creator_name = serializers.CharField(source='display_name', read_only=True)
+    profile_image = serializers.ImageField(read_only=True)
 
     class Meta:
         model = CreatorProfile
-        fields = ("creator_name", "bio", "username")
+        fields = ("id", "creator_name", "bio", "username", "profile_image")
+
 
 class GlobalCategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -34,7 +39,6 @@ class GlobalCategorySerializer(serializers.ModelSerializer):
 
 
 class GlobalSubCategorySerializer(serializers.ModelSerializer):
-    """Serializes the subcategory and includes the parent category."""
     category = GlobalCategorySerializer(read_only=True)
 
     class Meta:
@@ -48,29 +52,72 @@ class GlobalLevelSerializer(serializers.ModelSerializer):
         fields = ("name",)
 
 
+class LessonResourceSerializer(serializers.ModelSerializer):
+    book_details = serializers.SerializerMethodField()
+    access_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LessonResource
+        fields = (
+            'id', 'title', 'description', 'resource_type', 'order',
+            'file', 'external_url', 'course_book',
+            'reading_instructions', 'book_details', 'access_status'
+        )
+        read_only_fields = ('id', 'book_details', 'access_status')
+
+    def get_book_details(self, obj):
+        if obj.resource_type == 'book_ref' and obj.course_book:
+            return BookListSerializer(obj.course_book.book, context=self.context).data
+        return None
+
+    def get_access_status(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return {'has_access': False, 'reason': 'not_logged_in'}
+
+        if obj.resource_type == 'book_ref' and obj.course_book:
+            user = request.user
+            book = obj.course_book.book
+
+            from books.models import BookAccess
+            if BookAccess.objects.filter(user=user, book=book).exists():
+                return {'has_access': True, 'reason': 'owned'}
+
+            if obj.course_book.integration_type == 'included':
+                return {'has_access': True, 'reason': 'included_in_course'}
+
+            return {
+                'has_access': False,
+                'reason': 'purchase_required',
+                'price': book.price,
+                'currency': book.currency,
+                'buy_url': f"/books/{book.slug}"
+            }
+
+        return {'has_access': True}
+
+
 class LessonBaseSerializer(serializers.ModelSerializer):
-    """Base serializer with common lesson fields."""
+    resources = LessonResourceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Lesson
-        fields = ("title", "is_preview", "estimated_duration_minutes", "video_file")
+        fields = ("id", "title", "is_preview", "estimated_duration_minutes", "video_file", "resources")
 
 
 class LessonBriefSerializer(LessonBaseSerializer):
-    """Lightweight lesson serializer for course details."""
     pass
 
 
 class ModuleBaseSerializer(serializers.ModelSerializer):
-    """Base serializer for module info."""
-
     class Meta:
         model = Module
-        fields = ("title", "description")
+        fields = ("id", "title", "description", "order")
 
 
 class CourseListSerializer(serializers.ModelSerializer):
     instructor_name = serializers.CharField(source='creator_profile.user.get_full_name', read_only=True)
+    instructors = serializers.SerializerMethodField()
     category = serializers.CharField(source='global_subcategory.category.name', read_only=True)
     level = serializers.CharField(source='global_level.name', read_only=True)
     num_students = serializers.IntegerField(read_only=True)
@@ -83,10 +130,13 @@ class CourseListSerializer(serializers.ModelSerializer):
         model = Course
         fields = (
             "slug", "title", "thumbnail", "short_description",
-            "instructor_name", "is_enrolled", "rating_avg",
+            "instructor_name", "instructors", "is_enrolled", "rating_avg",
             "price", "num_students", "category", "level",
             "status", "status_display", "progress"
         )
+
+    def get_instructors(self, obj):
+        return [user.get_full_name() for user in obj.instructors.all()]
 
 
 class CourseNoteSerializer(serializers.ModelSerializer):
@@ -103,6 +153,7 @@ class CourseReplySerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseReply
         fields = ['id', 'user_name', 'user_avatar', 'content', 'is_instructor', 'created_at']
+
 
 class CourseQuestionSerializer(serializers.ModelSerializer):
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
@@ -128,6 +179,7 @@ class ModuleDetailSerializer(ModuleBaseSerializer):
 
 class CourseDetailSerializer(serializers.ModelSerializer):
     instructor = InstructorSummarySerializer(source="creator_profile", read_only=True)
+    instructors = serializers.SerializerMethodField()
     modules = ModuleDetailSerializer(many=True, read_only=True)
     category = GlobalSubCategorySerializer(source="global_subcategory", read_only=True)
     level = GlobalLevelSerializer(source="global_level", read_only=True)
@@ -143,14 +195,17 @@ class CourseDetailSerializer(serializers.ModelSerializer):
             "slug", "title", "short_description", "long_description",
             "learning_objectives", "thumbnail",
             "promo_video",
-            "instructor", "organization_name", "category", "level",
+            "instructor", "instructors", "organization_name", "category", "level",
             "price", "rating_avg", "num_students", "num_ratings",
             "is_enrolled", "modules", "status", "created_at", "updated_at",
             "live_classes",
         )
 
+    def get_instructors(self, obj):
+        profiles = CreatorProfile.objects.filter(user__in=obj.instructors.all())
+        return InstructorSummarySerializer(profiles, many=True).data
+
     def to_representation(self, instance):
-        """Pass context to nested serializers."""
         data = super().to_representation(instance)
 
         if 'request' in self.context and 'live_classes' in data:
@@ -164,7 +219,6 @@ class CourseDetailSerializer(serializers.ModelSerializer):
 
 
 class QuizAttemptMinimalSerializer(serializers.ModelSerializer):
-    """Minimal data for a student's latest attempt used on the learning dashboard."""
     class Meta:
         model = QuizAttempt
         fields = ('score', 'max_score', 'attempt_number', 'is_completed', 'requires_review', 'completed_at')
@@ -180,7 +234,6 @@ class QuizQuestionLearningSerializer(serializers.ModelSerializer):
     def get_options(self, obj):
         shuffled_options = list(obj.options.all())
         random.shuffle(shuffled_options)
-
         return [{'id': opt.id, 'text': opt.text} for opt in shuffled_options]
 
 
@@ -196,26 +249,17 @@ class QuizLearningSerializer(serializers.ModelSerializer):
         )
 
     def get_latest_attempt(self, obj):
-        """Fetches the user's latest attempt for this quiz using the request context."""
         request = self.context.get("request")
-
         if not request or not request.user.is_authenticated:
             return None
-
         user = request.user
-
         latest_attempt = obj.attempts.filter(user=user).order_by('-attempt_number').first()
-
         if latest_attempt:
             return QuizAttemptMinimalSerializer(latest_attempt).data
         return None
 
 
 class ExistingAnswerSerializer(serializers.ModelSerializer):
-    """
-    Serializer to return saved user answers for a quiz resumption.
-    Used by GET /quizzes/{attempt_id}/answers/
-    """
     question_id = serializers.ReadOnlyField(source='question.id')
 
     class Meta:
@@ -230,7 +274,6 @@ class ExistingAnswerSerializer(serializers.ModelSerializer):
 
 
 class AssignmentSubmissionMinimalSerializer(serializers.ModelSerializer):
-    """Minimal data required for student status updates."""
     class Meta:
         model = AssignmentSubmission
         fields = (
@@ -251,37 +294,26 @@ class CourseAssignmentLearningSerializer(serializers.ModelSerializer):
         fields = ('id', 'title', 'description', 'due_date', 'max_score', 'latest_submission')
 
     def get_latest_submission(self, obj):
-        """Fetches the user's latest submission for this assignment."""
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-
         user = request.user
         latest_submission = obj.submissions.filter(user=user).order_by('-submitted_at').first()
-
         if latest_submission:
             return AssignmentSubmissionMinimalSerializer(latest_submission).data
         return None
 
 
 class AssignmentSubmissionCreateSerializer(serializers.ModelSerializer):
-    """
-    Serializer for creating or updating an AssignmentSubmission via FormData.
-    Requires at least one of 'file' or 'text_submission'.
-    """
-
     class Meta:
         model = AssignmentSubmission
         fields = ('file', 'text_submission')
 
     def validate(self, data):
-        """Ensure at least a file or text is submitted."""
         if not data.get('file') and not data.get('text_submission'):
             raise serializers.ValidationError("You must submit either a file or text content.")
-
         if 'text_submission' in data and data['text_submission'] == '':
             data['text_submission'] = None
-
         return data
 
 
@@ -289,6 +321,7 @@ class LessonLearningSerializer(serializers.ModelSerializer):
     is_completed = serializers.SerializerMethodField()
     last_watched_timestamp = serializers.SerializerMethodField()
     quizzes = QuizLearningSerializer(many=True, read_only=True)
+    resources = LessonResourceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Lesson
@@ -327,10 +360,6 @@ class ModuleLearningSerializer(ModuleBaseSerializer):
 
 
 class CourseLearningSerializer(serializers.ModelSerializer):
-    """
-    Serializer for the student learning view (/courses/{slug}/learn/).
-    Includes curriculum, live sessions, overview content, and necessary user context.
-    """
     modules = ModuleLearningSerializer(many=True, read_only=True)
     live_classes = LiveClassSerializer(many=True, read_only=True)
     creator_name = serializers.CharField(
@@ -352,8 +381,6 @@ class CourseLearningSerializer(serializers.ModelSerializer):
         )
 
     def to_representation(self, instance):
-        """Pass context (request) to nested serializers, especially for generating Jitsi JWTs
-        and fetching user-specific quiz attempt data."""
         data = super().to_representation(instance)
 
         if 'request' in self.context and 'live_classes' in data:
@@ -393,10 +420,6 @@ class QuestionCreateUpdateSerializer(serializers.ModelSerializer):
 
 
 class QuizCreateUpdateSerializer(serializers.ModelSerializer):
-    """
-    Used for the Full Quiz Editor in Tutor Dashboard.
-    Handles nested creation/update of Questions -> Options.
-    """
     id = serializers.IntegerField(required=False)
     questions = QuestionCreateUpdateSerializer(many=True, required=False)
 
@@ -405,9 +428,6 @@ class QuizCreateUpdateSerializer(serializers.ModelSerializer):
         fields = ('id', 'title', 'description', 'order', 'max_score', 'time_limit_minutes', 'max_attempts', 'questions')
 
     def create(self, validated_data):
-        """
-        Handles creating a Quiz with nested Questions and Options.
-        """
         questions_data = validated_data.pop('questions', [])
         quiz = Quiz.objects.create(**validated_data)
 
@@ -473,10 +493,11 @@ class CourseAssignmentCreateUpdateSerializer(serializers.ModelSerializer):
 
 class LessonCreateUpdateSerializer(serializers.ModelSerializer):
     quizzes = QuizCreateUpdateSerializer(many=True, required=False)
+    resources = LessonResourceSerializer(many=True, required=False)
 
     class Meta:
         model = Lesson
-        fields = ("title", "content", "video_file", "quizzes")
+        fields = ("title", "content", "video_file", "quizzes", "resources", "estimated_duration_minutes", "is_preview")
 
 
 class ModuleCreateUpdateSerializer(serializers.ModelSerializer):
@@ -489,13 +510,13 @@ class ModuleCreateUpdateSerializer(serializers.ModelSerializer):
 
 
 class LessonTutorDetailSerializer(serializers.ModelSerializer):
-    """ Serializer to READ lesson data for the edit form """
     video_file = serializers.SerializerMethodField()
     quizzes = QuizCreateUpdateSerializer(many=True, read_only=True)
+    resources = LessonResourceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Lesson
-        fields = ('id', 'title', 'content', 'video_file', 'quizzes')
+        fields = ('id', 'title', 'content', 'video_file', 'quizzes', 'resources')
 
     def get_video_file(self, obj):
         if obj.video_file:
@@ -507,7 +528,6 @@ class LessonTutorDetailSerializer(serializers.ModelSerializer):
 
 
 class ModuleTutorDetailSerializer(serializers.ModelSerializer):
-    """ Serializer to READ module data for the edit form """
     lessons = LessonTutorDetailSerializer(many=True, read_only=True)
     assignments = CourseAssignmentCreateUpdateSerializer(many=True, read_only=True)
 
@@ -520,6 +540,7 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
     global_category = serializers.SerializerMethodField()
     modules = ModuleTutorDetailSerializer(many=True, read_only=True)
     thumbnail = serializers.SerializerMethodField()
+    instructors = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -534,7 +555,8 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
             "thumbnail",
             "promo_video",
             "price", "status", "slug",
-            "modules", "is_public"
+            "modules", "is_public",
+            "instructors"
         )
 
     def get_global_category(self, obj):
@@ -543,7 +565,6 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
         return None
 
     def get_thumbnail(self, obj):
-        """ Returns the full URL for the thumbnail """
         if obj.thumbnail:
             request = self.context.get('request')
             if request:
@@ -551,19 +572,22 @@ class TutorCourseDetailSerializer(serializers.ModelSerializer):
             return obj.thumbnail.url
         return None
 
+    def get_instructors(self, obj):
+        return [user.id for user in obj.instructors.all()]
+
 
 class CourseCreateUpdateSerializer(serializers.ModelSerializer):
-    """
-    Serializer for tutors creating or updating courses with nested modules & lessons.
-    """
     thumbnail = serializers.ImageField(required=False, allow_null=True)
     modules = serializers.CharField(write_only=True, required=False)
     learning_objectives = serializers.CharField(write_only=True, required=False)
     status = serializers.ChoiceField(choices=Course.COURSE_STATUS_CHOICES, default="draft")
     global_category = serializers.PrimaryKeyRelatedField(
-        queryset=GlobalCategory.objects.all(), write_only=True, required=False
+        queryset=GlobalCategory.objects.all(), write_only=True, required=False, allow_null=True
     )
     is_public = serializers.BooleanField(required=False)
+    instructors = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), many=True, required=False
+    )
 
     class Meta:
         model = Course
@@ -573,8 +597,23 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
             "global_subcategory", "global_level",
             "global_category",
             "org_category", "org_level", "thumbnail", "promo_video",
-            "price", "status", "is_public", "modules",
+            "price", "status", "is_public", "modules", "instructors"
         )
+
+    def to_internal_value(self, data):
+        if hasattr(data, 'copy'):
+            data = data.copy()
+
+        optional_fields = [
+            'global_category', 'global_subcategory', 'global_level',
+            'org_category', 'org_level', 'price'
+        ]
+
+        for field in optional_fields:
+            if field in data and data[field] == "":
+                data.pop(field)
+
+        return super().to_internal_value(data)
 
     def _parse_json_field(self, value, field_name):
         if not value:
@@ -592,47 +631,37 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
 
     def validate_learning_objectives(self, value):
         objectives_data = self._parse_json_field(value, "learning_objectives")
-        field = serializers.ListField(child=serializers.DictField(child=serializers.CharField()))
-        return field.run_validation(objectives_data)
+        return objectives_data
 
     def validate(self, data):
-        """
-        Conditionally validates category and level fields based on whether
-        the course is an organization course (context provided by viewset)
-        or an independent course.
-        """
+        if data.get('status') == 'draft':
+            return data
+
         is_org_course = self.context.get('is_organization_course', False)
         errors = {}
 
         global_subcategory = data.get("global_subcategory")
         global_level = data.get("global_level")
-
         org_category = data.get("org_category")
         org_level = data.get("org_level")
 
         if is_org_course:
             if not global_subcategory:
-                errors['global_subcategory'] = "Global subcategory is required for organization courses."
+                errors['global_subcategory'] = "Global subcategory is required."
             if not global_level:
-                errors['global_level'] = "Global level is required for organization courses."
-
+                errors['global_level'] = "Global level is required."
             if not org_category:
-                errors['org_category'] = "Organization category is required for organization courses."
+                errors['org_category'] = "Organization category is required."
             if not org_level:
-                errors['org_level'] = "Organization level is required for organization courses."
-
+                errors['org_level'] = "Organization level is required."
         else:
             if not global_subcategory:
-                errors['global_subcategory'] = "Global subcategory is required for independent courses."
+                errors['global_subcategory'] = "Global subcategory is required."
             if not global_level:
-                errors['global_level'] = "Global level is required for independent courses."
+                errors['global_level'] = "Global level is required."
 
-            if org_category:
-                errors['org_category'] = "Organization category cannot be set for independent courses."
-                data.pop('org_category')
-            if org_level:
-                errors['org_level'] = "Organization level cannot be set for independent courses."
-                data.pop('org_level')
+            if 'org_category' in data: data['org_category'] = None
+            if 'org_level' in data: data['org_level'] = None
 
         if errors:
             raise serializers.ValidationError(errors)
@@ -655,17 +684,32 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
 
             for lesson_data in lessons_data:
                 quizzes_data = lesson_data.pop("quizzes", [])
+                resources_data = lesson_data.pop("resources", [])
 
                 file_key_or_path = lesson_data.pop('video_file', None)
                 lesson_kwargs = lesson_data.copy()
-                if file_key_or_path in request_files:
+
+                if file_key_or_path and file_key_or_path in request_files:
                     lesson_kwargs['video_file'] = request_files[file_key_or_path]
-                elif file_key_or_path and file_key_or_path.startswith(settings.MEDIA_URL):
-                    relative_path = os.path.relpath(file_key_or_path, settings.MEDIA_URL)
-                    lesson_kwargs['video_file'] = relative_path
+                elif file_key_or_path and isinstance(file_key_or_path, str) and file_key_or_path.startswith("http"):
+                    pass
+                else:
+                    lesson_kwargs['video_file'] = None
 
                 lesson_kwargs.pop('id', None)
                 lesson = Lesson.objects.create(module=module, **lesson_kwargs)
+
+                for res_data in resources_data:
+                    res_data.pop('id', None)
+                    res_file_key = res_data.pop('file', None)
+                    if res_file_key and res_file_key in request_files:
+                        res_data['file'] = request_files[res_file_key]
+
+                    course_book_id = res_data.pop('course_book', None)
+                    if course_book_id:
+                        res_data['course_book_id'] = course_book_id
+
+                    LessonResource.objects.create(lesson=lesson, **res_data)
 
                 for quiz_data in quizzes_data:
                     questions_data = quiz_data.pop("questions", [])
@@ -684,66 +728,49 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         modules_data = validated_data.pop("modules", [])
         objectives_data = validated_data.pop("learning_objectives", [])
-        validated_data.pop("global_category", None)
+        instructors = validated_data.pop("instructors", [])
 
         validated_data["learning_objectives"] = [
-            obj["value"] for obj in objectives_data if obj.get("value")
+            obj["value"] for obj in objectives_data if isinstance(obj, dict) and obj.get("value")
         ]
 
         request = self.context.get('request')
-        if not request:
-            raise serializers.ValidationError("Serializer requires request in context.")
-
         course = Course.objects.create(**validated_data)
 
-        self._create_modules(course, modules_data, request)
+        if instructors:
+            course.instructors.set(instructors)
 
+        self._create_modules(course, modules_data, request)
         return course
 
     def update(self, instance, validated_data):
         modules_data = validated_data.pop("modules", None)
         objectives_data = validated_data.pop("learning_objectives", None)
-        validated_data.pop("global_category", None)
+        instructors = validated_data.pop("instructors", None)
 
         request = self.context.get('request')
-        if not request:
-            raise serializers.ValidationError("Serializer requires request in context.")
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
         if objectives_data is not None:
-            instance.learning_objectives = [obj["value"] for obj in objectives_data if obj.get("value")]
+            instance.learning_objectives = [
+                obj["value"] for obj in objectives_data if isinstance(obj, dict) and obj.get("value")
+            ]
+
+        if instructors is not None:
+            instance.instructors.set(instructors)
 
         if modules_data is not None:
             instance.modules.all().delete()
             self._create_modules(instance, modules_data, request)
 
         instance.save()
-
         return instance
-
-    def to_representation(self, instance):
-        thumbnail_url = None
-        if instance.thumbnail:
-            request = self.context.get('request')
-            if request:
-                thumbnail_url = request.build_absolute_uri(instance.thumbnail.url)
-            else:
-                thumbnail_url = instance.thumbnail.url
-        return {
-            "id": instance.id,
-            "title": instance.title,
-            "slug": instance.slug,
-            "status": instance.status,
-            "price": instance.price,
-            "thumbnail_url": thumbnail_url,
-            "is_public": instance.is_public
-        }
 
 
 class LessonPreviewSerializer(serializers.ModelSerializer):
-    """Used for tutor preview mode — shows lesson content but no progress tracking."""
+    resources = LessonResourceSerializer(many=True, read_only=True)
 
     class Meta:
         model = Lesson
@@ -782,7 +809,6 @@ class CoursePreviewSerializer(serializers.ModelSerializer):
         )
 
     def to_representation(self, instance):
-        """Pass context to nested serializers."""
         data = super().to_representation(instance)
 
         if 'request' in self.context and 'live_classes' in data:
@@ -796,10 +822,6 @@ class CoursePreviewSerializer(serializers.ModelSerializer):
 
 
 class AnswerSubmissionSerializer(serializers.Serializer):
-    """
-    Helper serializer used within QuizAttemptSubmissionSerializer to validate
-    and parse data for a single answer.
-    """
     answer_id = serializers.PrimaryKeyRelatedField(
         queryset=Answer.objects.all(),
         source='id'
@@ -808,7 +830,6 @@ class AnswerSubmissionSerializer(serializers.Serializer):
     user_answer_text = serializers.CharField(required=False, allow_blank=True)
 
     def validate_answer_id(self, value):
-        """Ensures the submitted Answer ID belongs to the current QuizAttempt."""
         attempt = self.context.get('attempt')
         if value.attempt != attempt:
             raise serializers.ValidationError("Answer does not belong to the current attempt.")
@@ -816,17 +837,9 @@ class AnswerSubmissionSerializer(serializers.Serializer):
 
 
 class QuizAttemptSubmissionSerializer(serializers.Serializer):
-    """
-    Main serializer for processing a full quiz submission, validating all answers,
-    running the grading logic, and finalizing the QuizAttempt.
-    """
     answers = AnswerSubmissionSerializer(many=True)
 
     def save(self):
-        """
-        Processes the submission, performs automatic grading for MCQs,
-        marks the attempt complete, and calculates the final score.
-        """
         attempt = self.context.get('attempt')
         answers_data = self.validated_data['answers']
         total_score = 0
@@ -875,7 +888,6 @@ class QuizAttemptSubmissionSerializer(serializers.Serializer):
 
 
 class SubmissionUserSerializer(serializers.ModelSerializer):
-    """Minimal user info for displaying who submitted an assignment."""
     full_name = serializers.CharField(source='get_full_name', read_only=True)
 
     class Meta:
@@ -884,7 +896,6 @@ class SubmissionUserSerializer(serializers.ModelSerializer):
 
 
 class AssignmentSubmissionManagerSerializer(serializers.ModelSerializer):
-    """For tutors to view and grade a single submission."""
     user = SubmissionUserSerializer(read_only=True)
     assignment_title = serializers.CharField(source='assignment.title', read_only=True)
 
@@ -899,7 +910,6 @@ class AssignmentSubmissionManagerSerializer(serializers.ModelSerializer):
 
 
 class GradeAssignmentSerializer(serializers.ModelSerializer):
-    """For tutors to submit the grade and feedback."""
     class Meta:
         model = AssignmentSubmission
         fields = ("grade", "feedback", "submission_status")
@@ -911,7 +921,6 @@ class GradeAssignmentSerializer(serializers.ModelSerializer):
 
 
 class QuizAttemptManagerSerializer(serializers.ModelSerializer):
-    """For tutors to review quiz attempts, especially those requiring review."""
     user = SubmissionUserSerializer(read_only=True)
     quiz_title = serializers.CharField(source='quiz.title', read_only=True)
     lesson_title = serializers.CharField(source='quiz.lesson.title', read_only=True)
@@ -937,11 +946,13 @@ class LessonCreateAtomicSerializer(serializers.ModelSerializer):
         fields = ("id", "module", "title", "content", "video_file", "order")
         read_only_fields = ("module",)
 
+
 class CourseAssignmentAtomicSerializer(serializers.ModelSerializer):
     class Meta:
         model = CourseAssignment
         fields = ('id', 'module', 'title', 'description', 'due_date', 'max_score')
         read_only_fields = ("module",)
+
 
 class QuizAtomicSerializer(serializers.ModelSerializer):
     class Meta:
@@ -951,7 +962,6 @@ class QuizAtomicSerializer(serializers.ModelSerializer):
 
 
 class EnrollmentManagerSerializer(serializers.ModelSerializer):
-    """For tutors to view and manage enrolled students."""
     user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     user_email = serializers.CharField(source='user.email', read_only=True)
 
@@ -971,6 +981,7 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
     live_classes = LiveClassMinimalSerializer(many=True, read_only=True)
     global_category = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
+    instructors = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
@@ -995,7 +1006,8 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
             "quizzes_summary",
             "enrollments",
             "live_classes",
-            "is_public"
+            "is_public",
+            "instructors"
         )
 
     def get_thumbnail(self, obj):
@@ -1008,6 +1020,9 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
 
     def get_global_category(self, obj):
         return obj.global_subcategory.category_id if obj.global_subcategory else None
+
+    def get_instructors(self, obj):
+        return [user.id for user in obj.instructors.all()]
 
     def get_assignments_summary(self, obj):
         assignments = CourseAssignment.objects.filter(module__course=obj)

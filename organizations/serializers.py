@@ -1,7 +1,6 @@
 import json
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.utils import timezone
 from courses.models import Course
 from events.models import Event
 from org_community.models import OrgJoinRequest, OrgInvitation
@@ -9,6 +8,21 @@ from users.models import CreatorProfile
 from .models import Organization, OrgMembership, GuardianLink, OrgLevel, OrgCategory
 
 User = get_user_model()
+
+
+class FormDataJSONField(serializers.JSONField):
+    def to_internal_value(self, data):
+        if data in [None, "", "null"]:
+            return []
+        if isinstance(data, (dict, list)):
+            return super().to_internal_value(data)
+        if isinstance(data, str):
+            try:
+                return json.loads(data)
+            except json.JSONDecodeError:
+                raise serializers.ValidationError("Invalid JSON format.")
+        return super().to_internal_value(data)
+
 
 class OrganizationSerializer(serializers.ModelSerializer):
     logo = serializers.SerializerMethodField()
@@ -29,6 +43,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
 class OrgUserSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField(source='get_full_name')
+
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'full_name')
@@ -38,9 +53,11 @@ class OrgMembershipSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source="organization.name", read_only=True)
     organization_slug = serializers.CharField(source="organization.slug", read_only=True)
     user = OrgUserSerializer(read_only=True)
+
     class Meta:
         model = OrgMembership
-        fields = ('id', 'user', 'organization', 'organization_name', 'organization_slug', 'role', 'is_active', 'date_joined')
+        fields = ('id', 'user', 'organization', 'organization_name', 'organization_slug', 'role', 'is_active',
+                  'date_joined')
         read_only_fields = ('date_joined', 'organization')
 
 
@@ -59,14 +76,11 @@ class OrgLevelSerializer(serializers.ModelSerializer):
 
 
 class OrganizationSimpleSerializer(serializers.ModelSerializer):
-    """
-    Used by OrgCommunity serializers to show the name + LOGO.
-    """
     logo = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
-        fields = ['id', 'name', 'slug', 'logo', 'org_type']
+        fields = ['id', 'name', 'slug', 'logo', 'org_type', 'status']
 
     def get_logo(self, obj):
         if obj.logo:
@@ -77,36 +91,13 @@ class OrganizationSimpleSerializer(serializers.ModelSerializer):
         return None
 
 
-class FormDataJSONField(serializers.JSONField):
-    """
-    Custom field that handles JSON data coming from FormData (which arrives as strings).
-    """
-
-    def to_internal_value(self, data):
-        # If data is already a dict (standard JSON request), use parent logic
-        if isinstance(data, dict):
-            return super().to_internal_value(data)
-
-        # If data is a string (FormData), try to parse it
-        if isinstance(data, str):
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError:
-                raise serializers.ValidationError("Invalid JSON format.")
-
-        return super().to_internal_value(data)
-
-
 class OrganizationDetailSerializer(serializers.ModelSerializer):
     branding = FormDataJSONField(required=False)
     policies = FormDataJSONField(required=False)
-
     logo = serializers.SerializerMethodField()
-
     membership_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     membership_period = serializers.ChoiceField(choices=Organization.MEMBERSHIP_PERIODS, required=False)
     membership_duration_value = serializers.IntegerField(required=False, allow_null=True)
-
     stats = serializers.SerializerMethodField()
     current_user_membership = serializers.SerializerMethodField()
 
@@ -114,7 +105,7 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
         model = Organization
         fields = [
             'id', 'name', 'slug', 'org_type', 'description',
-            'logo', 'approved',
+            'logo', 'approved', 'status',
             'branding', 'policies', 'created_at', 'stats',
             'current_user_membership',
             'membership_price', 'membership_period', 'membership_duration_value'
@@ -147,9 +138,6 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
             return {'is_active': membership.is_active, 'role': membership.role, 'organization_slug': obj.slug}
         return None
 
-    def update(self, instance, validated_data):
-        return super().update(instance, validated_data)
-
 
 class GuardianLinkSerializer(serializers.ModelSerializer):
     parent_details = OrgUserSerializer(source='parent', read_only=True)
@@ -161,21 +149,18 @@ class GuardianLinkSerializer(serializers.ModelSerializer):
 
 
 class OrgLevelInputSerializer(serializers.Serializer):
-    """Simple validator for creating levels during org creation"""
     name = serializers.CharField(max_length=100)
     description = serializers.CharField(required=False, allow_blank=True)
     order = serializers.IntegerField(required=False, default=0)
 
 
 class OrgCategoryInputSerializer(serializers.Serializer):
-    """Simple validator for creating categories during org creation"""
     name = serializers.CharField(max_length=100)
     description = serializers.CharField(required=False, allow_blank=True)
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):
     logo = serializers.ImageField(required=False, allow_null=True)
-
     levels = FormDataJSONField(required=False, write_only=True)
     categories = FormDataJSONField(required=False, write_only=True)
     branding = FormDataJSONField(required=False)
@@ -184,7 +169,7 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = [
-            'name', 'org_type', 'description', 'logo',
+            'name', 'org_type', 'description', 'logo', 'status',
             'membership_price', 'membership_period', 'membership_duration_value',
             'branding', 'policies',
             'levels', 'categories', 'slug'
@@ -192,7 +177,6 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ['slug']
 
     def to_representation(self, instance):
-        """Ensure absolute URL in response."""
         ret = super().to_representation(instance)
         if instance.logo:
             request = self.context.get('request')
@@ -203,45 +187,53 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
         return ret
 
     def validate_levels(self, value):
-        """Ensure the JSON structure for levels is valid"""
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except ValueError:
-                raise serializers.ValidationError("Levels must be valid JSON.")
-
         serializer = OrgLevelInputSerializer(data=value, many=True)
         serializer.is_valid(raise_exception=True)
         return serializer.validated_data
 
     def validate_categories(self, value):
-        """Ensure the JSON structure for categories is valid"""
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except ValueError:
-                raise serializers.ValidationError("Categories must be valid JSON.")
-
         serializer = OrgCategoryInputSerializer(data=value, many=True)
         serializer.is_valid(raise_exception=True)
         return serializer.validated_data
+
+    def validate(self, data):
+        status = data.get('status', 'draft')
+
+        if status != 'draft':
+            errors = {}
+            if not data.get('description') or len(data.get('description')) < 10:
+                errors["description"] = "Description is required (min 10 chars) for submission."
+
+            if not data.get('org_type'):
+                errors["org_type"] = "Organization type is required for submission."
+
+            period = data.get('membership_period', 'free')
+            price = data.get('membership_price', 0)
+
+            if period != 'free' and (price is None or price <= 0):
+                errors["membership_price"] = "Price must be greater than 0 for paid memberships."
+
+            if errors:
+                raise serializers.ValidationError(errors)
+
+        return data
 
     def create(self, validated_data):
         levels_data = validated_data.pop('levels', [])
         categories_data = validated_data.pop('categories', [])
 
-        # Simple create works now because branding/policies are already dicts
         organization = Organization.objects.create(**validated_data)
 
-        # Create nested objects
         if levels_data:
-            OrgLevel.objects.bulk_create([OrgLevel(organization=organization, **item) for item in levels_data])
+            OrgLevel.objects.bulk_create(
+                [OrgLevel(organization=organization, **item) for item in levels_data]
+            )
 
         if categories_data:
             OrgCategory.objects.bulk_create(
-                [OrgCategory(organization=organization, **item) for item in categories_data])
+                [OrgCategory(organization=organization, **item) for item in categories_data]
+            )
 
-        # Set Owner
         user = self.context['request'].user
         OrgMembership.objects.create(
             user=user, organization=organization, role='owner',
@@ -252,9 +244,6 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
 
 
 class OrgAdminInvitationSerializer(serializers.ModelSerializer):
-    """
-    Serializer for ADMINS to view their organization's sent invitations.
-    """
     invited_user = OrgUserSerializer(read_only=True)
     invited_by = OrgUserSerializer(read_only=True)
 
@@ -264,14 +253,10 @@ class OrgAdminInvitationSerializer(serializers.ModelSerializer):
 
 
 class StudentEnrollmentSerializer(serializers.Serializer):
-    """
-    Serializer used for the payment initiation step for students.
-    Handles level selection and basic validation.
-    """
     org_level_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate(self, data):
-        organization = self.context.get('organization')  # Assume view passes this
+        organization = self.context.get('organization')
         user = self.context['request'].user
         org_level_id = data.get('org_level_id')
 
@@ -289,15 +274,7 @@ class StudentEnrollmentSerializer(serializers.Serializer):
             except OrgLevel.DoesNotExist:
                 raise serializers.ValidationError({"org_level_id": "Invalid level selected for this organization."})
 
-        # 4. Handle Payment Logic (Placeholder for Paystack/Revenue app integration)
-
         if organization.membership_price > 0:
-            # Placeholder for revenue app call to initiate payment and get URL
-
-            # Example:
-            # revenue_details = initiate_payment(user, organization, organization.membership_price)
-            # data['checkout_url'] = revenue_details['url']
-            # data['payment_ref'] = revenue_details['reference']
             pass
         else:
             data['checkout_url'] = None
@@ -307,8 +284,6 @@ class StudentEnrollmentSerializer(serializers.Serializer):
         return data
 
     def create(self, validated_data):
-        # NOTE: This method should be implemented to create a Pending OrgMembership
-        # and a Transaction/Order, returning the checkout URL if payment is required.
         pass
 
 
@@ -318,7 +293,8 @@ class OrganizationListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Organization
-        fields = ('slug', 'name', 'org_type', 'logo', 'description', 'membership_price', 'membership_period', 'is_member')
+        fields = ('slug', 'name', 'org_type', 'logo', 'description', 'membership_price', 'membership_period',
+                  'is_member', 'status')
 
     def get_logo(self, obj):
         if obj.logo:
@@ -363,9 +339,7 @@ class OrgTeamMemberSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source='user.first_name')
     last_name = serializers.CharField(source='user.last_name')
     email = serializers.EmailField(source='user.email')
-
     profile = serializers.SerializerMethodField()
-
     subjects = OrgCategorySimpleSerializer(many=True, read_only=True)
 
     class Meta:
@@ -380,6 +354,3 @@ class OrgTeamMemberSerializer(serializers.ModelSerializer):
         if hasattr(obj.user, 'creator_profile'):
             return TeamMemberProfileSerializer(obj.user.creator_profile, context=self.context).data
         return None
-
-
-

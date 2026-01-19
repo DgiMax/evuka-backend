@@ -8,15 +8,14 @@ from .models import (
     Quiz, Question, Option, QuizAttempt, Answer,
     CourseAssignment, AssignmentSubmission, CourseRating,
     CourseQuestion, CourseReply, CourseNote,
+    LessonResource
 )
-
 
 class OptionInline(admin.TabularInline):
     model = Option
     extra = 1
     fields = ("text", "is_correct")
     max_num = 6
-
 
 class QuestionInline(admin.StackedInline):
     model = Question
@@ -28,13 +27,17 @@ class QuestionInline(admin.StackedInline):
     )
     inlines = [OptionInline]
 
-
 class QuizInline(admin.TabularInline):
     model = Quiz
     extra = 1
     fields = ("title", "order", "max_score", "time_limit_minutes", "max_attempts")
     show_change_link = True
 
+class LessonResourceInline(admin.TabularInline):
+    model = LessonResource
+    extra = 1
+    fields = ("title", "resource_type", "order", "file", "external_url", "course_book")
+    autocomplete_fields = ("course_book",)
 
 class LessonInline(admin.TabularInline):
     model = Lesson
@@ -45,13 +48,11 @@ class LessonInline(admin.TabularInline):
     )
     show_change_link = True
 
-
 class AssignmentInline(admin.TabularInline):
     model = CourseAssignment
     extra = 1
     fields = ("title", "order", "due_date", "max_score")
     show_change_link = True
-
 
 class ModuleInline(admin.TabularInline):
     model = Module
@@ -59,13 +60,11 @@ class ModuleInline(admin.TabularInline):
     fields = ("title", "order")
     show_change_link = True
 
-
 class GlobalSubCategoryInline(admin.TabularInline):
     model = GlobalSubCategory
     extra = 1
     fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
-
 
 @admin.register(GlobalCategory)
 class GlobalCategoryAdmin(admin.ModelAdmin):
@@ -78,7 +77,6 @@ class GlobalCategoryAdmin(admin.ModelAdmin):
     def get_subcategory_count(self, obj):
         return obj.subcategories.count()
 
-
 @admin.register(GlobalSubCategory)
 class GlobalSubCategoryAdmin(admin.ModelAdmin):
     list_display = ("name", "category", "slug")
@@ -87,13 +85,11 @@ class GlobalSubCategoryAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     autocomplete_fields = ("category",)
 
-
 @admin.register(GlobalLevel)
 class GlobalLevelAdmin(admin.ModelAdmin):
     list_display = ("name", "order", "description")
     ordering = ("order",)
     search_fields = ("name",)
-
 
 class CourseAdminForm(forms.ModelForm):
     class Meta:
@@ -104,7 +100,6 @@ class CourseAdminForm(forms.ModelForm):
             "learning_objectives": forms.Textarea(attrs={"rows": 7}),
             "metadata": forms.Textarea(attrs={"rows": 5}),
         }
-
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
@@ -158,7 +153,6 @@ class CourseAdmin(admin.ModelAdmin):
     def get_average_rating(self, obj):
         return f"{obj.rating_avg:.2f}" if obj.rating_avg else "–"
 
-
 @admin.register(Module)
 class ModuleAdmin(admin.ModelAdmin):
     list_display = ("title", "course", "order", "get_lessons_count", "get_assignments_count")
@@ -175,19 +169,24 @@ class ModuleAdmin(admin.ModelAdmin):
     def get_assignments_count(self, obj):
         return obj.assignments.count()
 
-
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
     list_display = ("title", "module", "organization", "order", "video_file", "is_preview", "get_quiz_count")
     search_fields = ("title", "content")
     list_filter = ("organization", "module__course__title")
     autocomplete_fields = ("module", "organization")
-    inlines = [QuizInline]
+    inlines = [LessonResourceInline, QuizInline]
 
     @admin.display(description="# Quizzes")
     def get_quiz_count(self, obj):
         return obj.quizzes.count()
 
+@admin.register(LessonResource)
+class LessonResourceAdmin(admin.ModelAdmin):
+    list_display = ("title", "lesson", "resource_type", "order")
+    list_filter = ("resource_type", "lesson__module__course")
+    search_fields = ("title", "lesson__title")
+    autocomplete_fields = ("lesson", "course_book")
 
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
@@ -195,7 +194,6 @@ class EnrollmentAdmin(admin.ModelAdmin):
     list_filter = ("status", "role", "course__title")
     search_fields = ("user__email", "user__username", "course__title")
     autocomplete_fields = ("user", "course")
-
 
 @admin.register(LessonProgress)
 class LessonProgressAdmin(admin.ModelAdmin):
@@ -205,7 +203,6 @@ class LessonProgressAdmin(admin.ModelAdmin):
     autocomplete_fields = ("user", "lesson")
     readonly_fields = ("completed_at", "last_watched_timestamp")
 
-
 @admin.register(Certificate)
 class CertificateAdmin(admin.ModelAdmin):
     list_display = ("user", "course", "issue_date", "certificate_uid")
@@ -213,7 +210,6 @@ class CertificateAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "course__title", "certificate_uid")
     autocomplete_fields = ("user", "course")
     readonly_fields = ("certificate_uid", "issue_date")
-
 
 @admin.register(CourseRating)
 class CourseRatingAdmin(admin.ModelAdmin):
@@ -223,7 +219,6 @@ class CourseRatingAdmin(admin.ModelAdmin):
     autocomplete_fields = ("user", "course")
     readonly_fields = ("created_at",)
 
-
 @admin.register(Quiz)
 class QuizAdmin(admin.ModelAdmin):
     list_display = ("title", "lesson", "max_score", "max_attempts", "order")
@@ -231,7 +226,6 @@ class QuizAdmin(admin.ModelAdmin):
     search_fields = ("title", "lesson__title")
     autocomplete_fields = ("lesson",)
     inlines = [QuestionInline]
-
 
 @admin.register(Question)
 class QuestionAdmin(admin.ModelAdmin):
@@ -241,7 +235,6 @@ class QuestionAdmin(admin.ModelAdmin):
     autocomplete_fields = ("quiz",)
     inlines = [OptionInline]
 
-
 @admin.register(Option)
 class OptionAdmin(admin.ModelAdmin):
     list_display = ("text", "question", "is_correct")
@@ -249,7 +242,6 @@ class OptionAdmin(admin.ModelAdmin):
     search_fields = ("text", "question__text")
     autocomplete_fields = ("question",)
     list_select_related = ("question",)
-
 
 @admin.register(QuizAttempt)
 class QuizAttemptAdmin(admin.ModelAdmin):
@@ -265,7 +257,6 @@ class QuizAttemptAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('quiz')
 
-
 @admin.register(Answer)
 class AnswerAdmin(admin.ModelAdmin):
     list_display = ("attempt", "question", "is_correct", "score_earned")
@@ -273,7 +264,6 @@ class AnswerAdmin(admin.ModelAdmin):
     search_fields = ("attempt__user__username", "question__text", "user_answer_text")
     autocomplete_fields = ("attempt", "question", "selected_option")
     readonly_fields = ("score_earned",)
-
 
 @admin.register(CourseAssignment)
 class CourseAssignmentAdmin(admin.ModelAdmin):
@@ -285,7 +275,6 @@ class CourseAssignmentAdmin(admin.ModelAdmin):
     @admin.display(description="# Submissions")
     def get_submission_count(self, obj):
         return obj.submissions.count()
-
 
 @admin.register(AssignmentSubmission)
 class AssignmentSubmissionAdmin(admin.ModelAdmin):
@@ -306,7 +295,6 @@ class AssignmentSubmissionAdmin(admin.ModelAdmin):
         }),
     )
 
-
 @admin.register(CourseQuestion)
 class CourseQuestionAdmin(admin.ModelAdmin):
     list_display = ("title", "course", "user", "created_at", "get_reply_count")
@@ -319,7 +307,6 @@ class CourseQuestionAdmin(admin.ModelAdmin):
     def get_reply_count(self, obj):
         return obj.replies.count()
 
-
 @admin.register(CourseReply)
 class CourseReplyAdmin(admin.ModelAdmin):
     list_display = ("user", "question", "is_instructor", "created_at")
@@ -327,7 +314,6 @@ class CourseReplyAdmin(admin.ModelAdmin):
     search_fields = ("content", "user__username")
     autocomplete_fields = ("question", "user")
     readonly_fields = ("created_at",)
-
 
 @admin.register(CourseNote)
 class CourseNoteAdmin(admin.ModelAdmin):
