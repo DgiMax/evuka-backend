@@ -226,3 +226,9 @@ class CourseBookSerializer(serializers.ModelSerializer):
             'applied_commission_percent', 'created_at', 'book_details'
         )
         read_only_fields = ('applied_commission_percent', 'created_at')
+
+
+class BookShortSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Book
+        fields = ('id', 'title', 'authors', 'cover_image', 'price', 'currency')

@@ -1,11 +1,18 @@
-from rest_framework.routers import DefaultRouter
 from django.urls import path, include
-from .views import LiveClassViewSet, LiveLessonViewSet, AllLiveClassesViewSet
+from rest_framework.routers import DefaultRouter
+from .views import (
+    LiveClassManagementViewSet,
+    StudentLiveHubViewSet,
+    LiveLessonViewSet
+)
 
 router = DefaultRouter()
-router.register(r"classes", LiveClassViewSet, basename="live-class")
+
+router.register(r"manage/classes", LiveClassManagementViewSet, basename="live-class-manage")
+
+router.register(r"hub", StudentLiveHubViewSet, basename="live-hub")
+
 router.register(r"lessons", LiveLessonViewSet, basename="live-lesson")
-router.register(r'all-classes', AllLiveClassesViewSet, basename='all-live-classes')
 
 urlpatterns = [
     path("", include(router.urls)),

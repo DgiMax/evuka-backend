@@ -418,14 +418,21 @@ class CreatorProfileSerializer(serializers.ModelSerializer):
 
 
 class DashboardCourseMinimalSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for 'Best Performing Courses' list."""
     student_count = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     thumbnail = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-        fields = ["id", "title", "slug", "thumbnail", "student_count", "revenue", "rating_avg"]
+        fields = [
+            "id",
+            "title",
+            "slug",
+            "thumbnail",
+            "student_count",
+            "revenue",
+            "rating_avg"
+        ]
 
     def get_thumbnail(self, obj):
         if obj.thumbnail:
@@ -437,13 +444,19 @@ class DashboardCourseMinimalSerializer(serializers.ModelSerializer):
 
 
 class DashboardEventMinimalSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for 'Upcoming Events' list."""
     start_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M")
     banner_image = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
-        fields = ["id", "title", "slug", "start_time", "banner_image", "event_type"]
+        fields = [
+            "id",
+            "title",
+            "slug",
+            "start_time",
+            "banner_image",
+            "event_type"
+        ]
 
     def get_banner_image(self, obj):
         if obj.banner_image:
@@ -455,10 +468,10 @@ class DashboardEventMinimalSerializer(serializers.ModelSerializer):
 
 
 class DashboardLiveLessonSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for 'Upcoming Classes' list."""
     course_title = serializers.CharField(source="live_class.course.title", read_only=True)
-    start_time = serializers.TimeField(format="%H:%M")
-    date = serializers.DateField(format="%Y-%m-%d")
+    start_time = serializers.DateTimeField(source="start_datetime", format="%H:%M")
+    date = serializers.DateTimeField(source="start_datetime", format="%Y-%m-%d")
+    status = serializers.ReadOnlyField()
 
     class Meta:
         model = LiveLesson
@@ -468,11 +481,10 @@ class DashboardLiveLessonSerializer(serializers.ModelSerializer):
             "course_title",
             "date",
             "start_time",
-            "end_time",
-            "is_active",
+            "end_datetime",
+            "status",
             "chat_room_id"
         ]
-
 
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -694,3 +706,43 @@ class InstructorSearchSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('id', 'username', 'display_name', 'profile_image', 'headline')
+
+class EventAnalyticsSerializer(serializers.ModelSerializer):
+    registration_stats = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Event
+        fields = ['id', 'title', 'start_time', 'event_type', 'event_status', 'registration_stats']
+
+    def get_registration_stats(self, obj):
+        return {
+            "total": obj.registrations.count(),
+            "attended": obj.registrations.filter(status='attended').count(),
+            "revenue": float(obj.registrations.count() * obj.price) if obj.is_paid else 0
+        }
+
+class CourseAnalyticsSerializer(serializers.ModelSerializer):
+    student_metrics = serializers.SerializerMethodField()
+    revenue_metrics = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = ['id', 'title', 'slug', 'status', 'rating_avg', 'student_metrics', 'revenue_metrics']
+
+    def get_student_metrics(self, obj):
+        enrollments = obj.enrollments.all()
+        total = enrollments.count()
+        completed = enrollments.filter(status='completed').count()
+        return {
+            "total": total,
+            "completed": completed,
+            "completion_rate": round((completed / total * 100), 1) if total > 0 else 0
+        }
+
+    def get_revenue_metrics(self, obj):
+        return {
+            "total": float(obj.enrollments.count() * (obj.price or 0)),
+            "price": float(obj.price or 0)
+        }
+
+

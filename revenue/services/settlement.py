@@ -1,29 +1,33 @@
 from decimal import Decimal
 from django.db import transaction
-from revenue.models import Wallet, Transaction
+from django.conf import settings
+from django.contrib.auth import get_user_model
+
+from revenue.models import Wallet, Transaction, Payout
 from organizations.models import Organization
+from organizations.models_finance import TutorAgreement, PendingEarning
+from organizations.constants import MIN_TUTOR_SHARE_PERCENT
+from payments.services.paystack_payout import create_transfer_recipient, initiate_transfer
 
 PLATFORM_FEE_PERCENT = Decimal("0.10")
+
+User = get_user_model()
 
 
 def distribute_order_revenue(order):
     """
-    Splits money between Sellers (Tutors/Orgs) and the Platform.
-    Idempotent: Checks if transactions already exist for this order to prevent double-payment.
+    Core settlement engine.
+    Splits revenue between Platform, Organizations (Payroll model), and Independent Creators.
     """
-    # 1. Idempotency Check: Have we already paid out for this order?
     if getattr(order, 'is_distributed', False):
         return
 
-    # Secondary check on transaction history
     if Transaction.objects.filter(description__contains=f"Order #{order.order_number}").exists():
         return
 
-    # Get System Wallet (Safely create if missing to prevent crashes)
     try:
         platform_wallet = Wallet.get_system_wallet()
     except Wallet.DoesNotExist:
-        # Create system org and wallet if this is the first ever transaction
         sys_org, _ = Organization.objects.get_or_create(
             name="Evuka Platform",
             slug="evuka-platform",
@@ -33,80 +37,143 @@ def distribute_order_revenue(order):
 
     with transaction.atomic():
         for item in order.items.all():
-            seller_wallet = None
-            product_desc = ""
 
-            # 2. Identify Seller Wallet (Strict Ownership Rules)
-
-            # --- A. COURSE LOGIC ---
-            if item.course:
-                if item.course.organization:
-                    # RULE: Org Course -> Money goes to Organization
-                    seller_wallet, _ = Wallet.objects.get_or_create(owner_org=item.course.organization)
-                    product_desc = f"Course: {item.course.title} (Org Sale)"
-                else:
-                    # RULE: Independent Course -> Money goes to Creator
-                    seller_wallet, _ = Wallet.objects.get_or_create(owner_user=item.course.creator)
-                    product_desc = f"Course: {item.course.title}"
-
-            # --- B. EVENT LOGIC ---
-            elif item.event:
-                # Events are children of Courses. We must check the Parent Course.
-                # Use getattr to prevent crashes if event is somehow orphaned
-                parent_course = getattr(item.event, 'course', None)
-                course_org = parent_course.organization if parent_course else None
-
-                if course_org:
-                    # RULE: Org Event -> Money goes to Organization
-                    seller_wallet, _ = Wallet.objects.get_or_create(owner_org=course_org)
-                    product_desc = f"Event: {item.event.title} (Org Event)"
-                else:
-                    # RULE: Independent Event -> Money goes to Organizer
-                    organizer = item.event.organizer
-                    if not organizer and parent_course:
-                        organizer = parent_course.creator  # Fallback to course creator
-
-                    if organizer:
-                        seller_wallet, _ = Wallet.objects.get_or_create(owner_user=organizer)
-                        product_desc = f"Event: {item.event.title}"
-
-            # --- C. MEMBERSHIP LOGIC ---
-            elif item.organization:
-                seller_wallet, _ = Wallet.objects.get_or_create(owner_org=item.organization)
-                product_desc = f"Payment to: {item.organization.name}"
-
-            # --- D. BOOK LOGIC (Added) ---
-            elif item.book:
-                # Books pay the creator directly
-                seller_wallet, _ = Wallet.objects.get_or_create(owner_user=item.book.created_by)
-                product_desc = f"Book: {item.book.title}"
-
-            # If no wallet found (e.g. data error), skip item
-            if not seller_wallet:
-                continue
-
-            # 3. Calculate Splits
             gross_amount = Decimal(str(item.price))
-            commission = gross_amount * PLATFORM_FEE_PERCENT
-            net_earnings = gross_amount - commission
-
-            # 4. Execute Transfers
-            # We add source_item=item to link the transaction to the specific product
-            seller_wallet.deposit(
-                amount=net_earnings,
-                description=f"Earnings from {product_desc} (Order #{order.order_number})",
-                tx_type="credit",
-                source_item=item
-            )
+            platform_fee = gross_amount * PLATFORM_FEE_PERCENT
+            net_revenue = gross_amount - platform_fee
 
             platform_wallet.deposit(
-                amount=commission,
-                description=f"Commission from {product_desc} (Order #{order.order_number})",
+                amount=platform_fee,
+                description=f"Fee: {item} (Order #{order.order_number})",
                 tx_type="fee",
                 source_item=item
             )
 
-        # 5. Mark Order as Distributed
-        # This flag is critical to prevent re-running this function on the same order
+            if item.course and item.course.organization:
+                org = item.course.organization
+                tutor = item.course.creator
+
+                agreement = TutorAgreement.objects.filter(
+                    organization=org,
+                    user=tutor,
+                    is_active=True
+                ).first()
+
+                tutor_percent = agreement.commission_percent if agreement else MIN_TUTOR_SHARE_PERCENT
+                tutor_cut = net_revenue * (tutor_percent / 100)
+
+                org_wallet, _ = Wallet.objects.get_or_create(owner_org=org)
+                org_wallet.deposit(
+                    amount=net_revenue,
+                    description=f"Sale: {item.course.title} (Includes {tutor_percent}% Tutor Share)",
+                    tx_type="credit",
+                    source_item=item
+                )
+
+                PendingEarning.objects.create(
+                    organization=org,
+                    tutor=tutor,
+                    source_order_item=item,
+                    amount=tutor_cut
+                )
+
+            elif item.event and getattr(item.event, 'course', None) and item.event.course.organization:
+                org = item.event.course.organization
+                org_wallet, _ = Wallet.objects.get_or_create(owner_org=org)
+                org_wallet.deposit(
+                    amount=net_revenue,
+                    description=f"Event: {item.event.title}",
+                    tx_type="credit",
+                    source_item=item
+                )
+
+            elif item.course:
+                seller_wallet, _ = Wallet.objects.get_or_create(owner_user=item.course.creator)
+                seller_wallet.deposit(
+                    amount=net_revenue,
+                    description=f"Sale: {item.course.title}",
+                    tx_type="credit",
+                    source_item=item
+                )
+
+            elif item.event:
+                organizer = item.event.organizer or item.event.course.creator
+                if organizer:
+                    seller_wallet, _ = Wallet.objects.get_or_create(owner_user=organizer)
+                    seller_wallet.deposit(
+                        amount=net_revenue,
+                        description=f"Event: {item.event.title}",
+                        tx_type="credit",
+                        source_item=item
+                    )
+
+            elif item.book:
+                seller_wallet, _ = Wallet.objects.get_or_create(owner_user=item.book.created_by)
+                seller_wallet.deposit(
+                    amount=net_revenue,
+                    description=f"Book: {item.book.title}",
+                    tx_type="credit",
+                    source_item=item
+                )
+
+            elif item.organization:
+                seller_wallet, _ = Wallet.objects.get_or_create(owner_org=item.organization)
+                seller_wallet.deposit(
+                    amount=net_revenue,
+                    description=f"Membership: {item.organization.name}",
+                    tx_type="credit",
+                    source_item=item
+                )
+
         order.is_distributed = True
         order.save()
+
+
+def process_payout_request(payout_id):
+    """
+    Takes a pending Payout request (Withdrawal) and executes it via Paystack Transfer API.
+    """
+    try:
+        payout = Payout.objects.get(id=payout_id, status='pending')
+    except Payout.DoesNotExist:
+        return "Payout not found or already processed."
+
+    wallet = payout.wallet
+
+    account_name = "Unknown"
+    account_number = "000000"
+    bank_code = "MPESA"
+
+    if wallet.owner_user:
+        account_name = wallet.owner_user.username
+    elif wallet.owner_org:
+        account_name = wallet.owner_org.name
+
+    recipient_resp = create_transfer_recipient(account_name, account_number, bank_code)
+
+    if not recipient_resp.get('status'):
+        payout.status = 'failed'
+        payout.failure_reason = recipient_resp.get('message', 'Recipient creation failed')
+        payout.save()
+        wallet.deposit(payout.amount, "Refund: Failed Payout Recipient", tx_type="refund")
+        return "Failed to create recipient."
+
+    recipient_code = recipient_resp['data']['recipient_code']
+
+    transfer_resp = initiate_transfer(
+        amount=payout.amount,
+        recipient_code=recipient_code,
+        reference=str(payout.reference),
+        reason=f"Payout for {account_name}"
+    )
+
+    if transfer_resp.get('status'):
+        payout.status = 'processing'
+        payout.save()
+        return "Payout initiated successfully."
+    else:
+        payout.status = 'failed'
+        payout.failure_reason = transfer_resp.get('message', 'Transfer initiation failed')
+        payout.save()
+        wallet.deposit(payout.amount, "Refund: Failed Payout Transfer", tx_type="refund")
+        return "Payout failed at Paystack."

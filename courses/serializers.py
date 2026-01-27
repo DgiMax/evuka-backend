@@ -9,6 +9,8 @@ from django.conf import settings
 from django.db.models import Sum, Case, When
 from django.http import QueryDict
 
+from books.models import BookAccess
+from live.serializers import LiveClassStudentSerializer, LiveClassManagementSerializer
 from .models import (
     Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalSubCategory,
     LessonProgress, Quiz, Question, Option, CourseAssignment, QuizAttempt,
@@ -16,7 +18,6 @@ from .models import (
     CourseReply, LessonResource
 )
 from users.models import CreatorProfile
-from live.serializers import LiveClassSerializer, LiveClassMinimalSerializer
 from books.serializers import BookListSerializer
 
 User = get_user_model()
@@ -53,6 +54,7 @@ class GlobalLevelSerializer(serializers.ModelSerializer):
 
 
 class LessonResourceSerializer(serializers.ModelSerializer):
+    book_id = serializers.UUIDField(write_only=True, required=False)
     book_details = serializers.SerializerMethodField()
     access_status = serializers.SerializerMethodField()
 
@@ -60,10 +62,10 @@ class LessonResourceSerializer(serializers.ModelSerializer):
         model = LessonResource
         fields = (
             'id', 'title', 'description', 'resource_type', 'order',
-            'file', 'external_url', 'course_book',
+            'file', 'external_url', 'course_book', 'book_id',
             'reading_instructions', 'book_details', 'access_status'
         )
-        read_only_fields = ('id', 'book_details', 'access_status')
+        read_only_fields = ('id', 'book_details', 'access_status', 'course_book')
 
     def get_book_details(self, obj):
         if obj.resource_type == 'book_ref' and obj.course_book:
@@ -79,7 +81,6 @@ class LessonResourceSerializer(serializers.ModelSerializer):
             user = request.user
             book = obj.course_book.book
 
-            from books.models import BookAccess
             if BookAccess.objects.filter(user=user, book=book).exists():
                 return {'has_access': True, 'reason': 'owned'}
 
@@ -89,12 +90,50 @@ class LessonResourceSerializer(serializers.ModelSerializer):
             return {
                 'has_access': False,
                 'reason': 'purchase_required',
-                'price': book.price,
+                'price': str(book.price),
                 'currency': book.currency,
                 'buy_url': f"/books/{book.slug}"
             }
 
         return {'has_access': True}
+
+    def validate(self, attrs):
+        if attrs.get('resource_type') == 'book_ref' and not attrs.get('book_id'):
+            if not self.instance or not self.instance.course_book:
+                raise serializers.ValidationError({"book_id": "A book must be selected for book references."})
+        return attrs
+
+    def create(self, validated_data):
+        book_uuid = validated_data.pop('book_id', None)
+        instance = super().create(validated_data)
+
+        if book_uuid and instance.lesson and instance.lesson.module:
+            try:
+                from courses.utils import get_or_create_course_book
+                course = instance.lesson.module.course
+                user = self.context['request'].user
+                cb = get_or_create_course_book(course, book_uuid, user)
+                instance.course_book = cb
+                instance.save()
+            except Exception:
+                pass
+        return instance
+
+    def update(self, instance, validated_data):
+        book_uuid = validated_data.pop('book_id', None)
+        instance = super().update(instance, validated_data)
+
+        if book_uuid and instance.lesson and instance.lesson.module:
+            try:
+                from courses.utils import get_or_create_course_book
+                course = instance.lesson.module.course
+                user = self.context['request'].user
+                cb = get_or_create_course_book(course, book_uuid, user)
+                instance.course_book = cb
+                instance.save()
+            except Exception:
+                pass
+        return instance
 
 
 class LessonBaseSerializer(serializers.ModelSerializer):
@@ -187,7 +226,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
     is_enrolled = serializers.BooleanField(read_only=True)
     num_students = serializers.IntegerField(read_only=True)
     status = serializers.CharField(read_only=True)
-    live_classes = LiveClassSerializer(many=True, read_only=True)
+    live_classes = LiveClassStudentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Course
@@ -210,7 +249,7 @@ class CourseDetailSerializer(serializers.ModelSerializer):
 
         if 'request' in self.context and 'live_classes' in data:
             live_classes_qs = instance.live_classes.all()
-            data['live_classes'] = LiveClassSerializer(
+            data['live_classes'] = LiveClassStudentSerializer(
                 live_classes_qs,
                 many=True,
                 context=self.context
@@ -361,7 +400,7 @@ class ModuleLearningSerializer(ModuleBaseSerializer):
 
 class CourseLearningSerializer(serializers.ModelSerializer):
     modules = ModuleLearningSerializer(many=True, read_only=True)
-    live_classes = LiveClassSerializer(many=True, read_only=True)
+    live_classes = LiveClassStudentSerializer(many=True, read_only=True)
     creator_name = serializers.CharField(
         source='creator_profile.user.get_full_name', read_only=True
     )
@@ -385,7 +424,7 @@ class CourseLearningSerializer(serializers.ModelSerializer):
 
         if 'request' in self.context and 'live_classes' in data:
             live_classes_qs = instance.live_classes.all()
-            data['live_classes'] = LiveClassSerializer(
+            data['live_classes'] = LiveClassStudentSerializer(
                 live_classes_qs,
                 many=True,
                 context=self.context
@@ -404,6 +443,7 @@ class CourseLearningSerializer(serializers.ModelSerializer):
 
 class OptionCreateUpdateSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
+    text = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Option
@@ -412,36 +452,47 @@ class OptionCreateUpdateSerializer(serializers.ModelSerializer):
 
 class QuestionCreateUpdateSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    options = OptionCreateUpdateSerializer(many=True, required=False)
+    text = serializers.CharField(required=False, allow_blank=True)
+    options = OptionCreateUpdateSerializer(many=True, required=False, allow_null=True)
 
     class Meta:
         model = Question
-        fields = ('id', 'text', 'question_type', 'score_weight', 'order', 'instructor_hint', 'options')
+        fields = (
+            'id', 'text', 'question_type', 'score_weight',
+            'order', 'instructor_hint', 'options'
+        )
 
 
 class QuizCreateUpdateSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
-    questions = QuestionCreateUpdateSerializer(many=True, required=False)
+    questions = QuestionCreateUpdateSerializer(many=True, required=False, allow_null=True)
+    title = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = Quiz
-        fields = ('id', 'title', 'description', 'order', 'max_score', 'time_limit_minutes', 'max_attempts', 'questions')
+        fields = (
+            'id', 'title', 'description', 'order', 'max_score',
+            'time_limit_minutes', 'max_attempts', 'questions'
+        )
 
     def create(self, validated_data):
-        questions_data = validated_data.pop('questions', [])
+        questions_data = validated_data.pop('questions', []) or []
         quiz = Quiz.objects.create(**validated_data)
 
         for q_data in questions_data:
-            options_data = q_data.pop('options', [])
-            question = Question.objects.create(quiz=quiz, **q_data)
+            options_data = q_data.pop('options', []) or []
 
+            if q_data.get('score_weight') is None:
+                q_data['score_weight'] = 1
+
+            question = Question.objects.create(quiz=quiz, **q_data)
             for o_data in options_data:
                 Option.objects.create(question=question, **o_data)
 
         return quiz
 
     def update(self, instance, validated_data):
-        questions_data = validated_data.pop('questions', [])
+        questions_data = validated_data.pop('questions', None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -449,17 +500,25 @@ class QuizCreateUpdateSerializer(serializers.ModelSerializer):
 
         if questions_data is not None:
             keep_question_ids = []
-
             for q_data in questions_data:
-                options_data = q_data.pop('options', [])
+                options_data = q_data.pop('options', []) or []
                 q_id = q_data.get('id')
 
                 if q_id:
-                    question = Question.objects.get(id=q_id, quiz=instance)
-                    for q_attr, q_val in q_data.items():
-                        setattr(question, q_attr, q_val)
-                    question.save()
+                    question = Question.objects.filter(id=q_id, quiz=instance).first()
+                    if question:
+                        for q_attr, q_val in q_data.items():
+                            if q_attr == 'score_weight' and q_val is None:
+                                q_val = 1
+                            setattr(question, q_attr, q_val)
+                        question.save()
+                    else:
+                        if q_data.get('score_weight') is None:
+                            q_data['score_weight'] = 1
+                        question = Question.objects.create(quiz=instance, **q_data)
                 else:
+                    if q_data.get('score_weight') is None:
+                        q_data['score_weight'] = 1
                     question = Question.objects.create(quiz=instance, **q_data)
 
                 keep_question_ids.append(question.id)
@@ -468,12 +527,16 @@ class QuizCreateUpdateSerializer(serializers.ModelSerializer):
                 for o_data in options_data:
                     o_id = o_data.get('id')
                     if o_id:
-                        option = Option.objects.get(id=o_id, question=question)
-                        for o_attr, o_val in o_data.items():
-                            setattr(option, o_attr, o_val)
-                        option.save()
+                        option = Option.objects.filter(id=o_id, question=question).first()
+                        if option:
+                            for o_attr, o_val in o_data.items():
+                                setattr(option, o_attr, o_val)
+                            option.save()
+                        else:
+                            option = Option.objects.create(question=question, **o_data)
                     else:
                         option = Option.objects.create(question=question, **o_data)
+
                     keep_option_ids.append(option.id)
 
                 question.options.exclude(id__in=keep_option_ids).delete()
@@ -670,6 +733,7 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
 
     def _create_modules(self, course, modules_data, request):
         request_files = request.FILES
+        from courses.utils import get_or_create_course_book
 
         for module_data in modules_data:
             lessons_data = module_data.pop("lessons", [])
@@ -705,9 +769,13 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
                     if res_file_key and res_file_key in request_files:
                         res_data['file'] = request_files[res_file_key]
 
-                    course_book_id = res_data.pop('course_book', None)
-                    if course_book_id:
-                        res_data['course_book_id'] = course_book_id
+                    book_uuid = res_data.pop('book_id', None) or res_data.pop('course_book', None)
+                    if book_uuid:
+                        try:
+                            course_book_instance = get_or_create_course_book(course, book_uuid, request.user)
+                            res_data['course_book'] = course_book_instance
+                        except Exception:
+                            pass
 
                     LessonResource.objects.create(lesson=lesson, **res_data)
 
@@ -719,6 +787,10 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
                     for question_data in questions_data:
                         options_data = question_data.pop("options", [])
                         question_data.pop('id', None)
+
+                        if question_data.get('score_weight') is None:
+                            question_data['score_weight'] = 1
+
                         question = Question.objects.create(quiz=quiz, **question_data)
 
                         for option_data in options_data:
@@ -729,6 +801,8 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
         modules_data = validated_data.pop("modules", [])
         objectives_data = validated_data.pop("learning_objectives", [])
         instructors = validated_data.pop("instructors", [])
+
+        validated_data.pop("global_category", None)
 
         validated_data["learning_objectives"] = [
             obj["value"] for obj in objectives_data if isinstance(obj, dict) and obj.get("value")
@@ -747,6 +821,8 @@ class CourseCreateUpdateSerializer(serializers.ModelSerializer):
         modules_data = validated_data.pop("modules", None)
         objectives_data = validated_data.pop("learning_objectives", None)
         instructors = validated_data.pop("instructors", None)
+
+        validated_data.pop("global_category", None)
 
         request = self.context.get('request')
 
@@ -795,7 +871,7 @@ class CoursePreviewSerializer(serializers.ModelSerializer):
     category = GlobalSubCategorySerializer(source="global_subcategory", read_only=True)
     level = GlobalLevelSerializer(source="global_level", read_only=True)
     organization_name = serializers.CharField(source="organization.name", read_only=True)
-    live_classes = LiveClassSerializer(many=True, read_only=True)
+    live_classes = LiveClassStudentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Course
@@ -813,7 +889,7 @@ class CoursePreviewSerializer(serializers.ModelSerializer):
 
         if 'request' in self.context and 'live_classes' in data:
             live_classes_qs = instance.live_classes.all()
-            data['live_classes'] = LiveClassSerializer(
+            data['live_classes'] = LiveClassStudentSerializer(
                 live_classes_qs,
                 many=True,
                 context=self.context
@@ -941,6 +1017,7 @@ class ModuleAtomicSerializer(serializers.ModelSerializer):
 
 
 class LessonCreateAtomicSerializer(serializers.ModelSerializer):
+    content = serializers.CharField(required=False, allow_blank=True)
     class Meta:
         model = Lesson
         fields = ("id", "module", "title", "content", "video_file", "order")
@@ -978,7 +1055,7 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
     assignments_summary = serializers.SerializerMethodField()
     quizzes_summary = serializers.SerializerMethodField()
     enrollments = EnrollmentManagerSerializer(many=True, read_only=True)
-    live_classes = LiveClassMinimalSerializer(many=True, read_only=True)
+    live_classes = LiveClassManagementSerializer(many=True, read_only=True)
     global_category = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     instructors = serializers.SerializerMethodField()

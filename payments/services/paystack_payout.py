@@ -21,24 +21,33 @@ def create_transfer_recipient(name, account_number, bank_code="MPESA"):
         "currency": "KES"
     }
 
-    resp = requests.post(url, json=data, headers=headers)
-    return resp.json()
+    try:
+        resp = requests.post(url, json=data, headers=headers)
+        return resp.json()
+    except requests.exceptions.RequestException:
+        return {"status": False, "message": "Connection error to Paystack"}
 
 
 def initiate_transfer(amount, recipient_code, reference, reason="Payout"):
     """
     Initiates the actual money transfer.
+    Expects amount in KES (will convert to Kobo/Cents).
     """
     url = f"{BASE_URL}/transfer"
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
 
+    amount_kobo = int(amount * 100)
+
     data = {
         "source": "balance",
-        "amount": int(float(amount) * 100),  # Paystack expects Kobo/Cents
+        "amount": amount_kobo,
         "recipient": recipient_code,
         "reason": reason,
         "reference": reference
     }
 
-    resp = requests.post(url, json=data, headers=headers)
-    return resp.json()
+    try:
+        resp = requests.post(url, json=data, headers=headers)
+        return resp.json()
+    except requests.exceptions.RequestException:
+        return {"status": False, "message": "Connection error to Paystack"}

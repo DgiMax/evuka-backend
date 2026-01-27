@@ -12,6 +12,8 @@ from rest_framework import serializers
 from datetime import timedelta
 from django.db.models import Sum, Count, F
 from django.db.models.functions import TruncMonth
+from rest_framework import generics, filters, permissions
+from .serializers import BookShortSerializer
 
 from .models import Book, BookCategory, BookSubCategory, BookAccess
 from .serializers import (
@@ -206,3 +208,13 @@ class PublisherAnalyticsView(APIView):
             "graph_data": monthly_data,
             "top_books": top_books
         })
+
+
+class BookLookupView(generics.ListAPIView):
+    queryset = Book.objects.filter(status='published')
+    serializer_class = BookShortSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['title', 'authors', 'isbn']
+    pagination_class = None
+

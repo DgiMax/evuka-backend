@@ -2,7 +2,9 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from django.utils.text import slugify
+from django.core.validators import MinValueValidator, MaxValueValidator
 from datetime import timedelta
+from .constants import DEFAULT_PAYOUT_DAY
 
 class Organization(models.Model):
     ORG_TYPES = [
@@ -25,6 +27,12 @@ class Organization(models.Model):
         ("archived", "Archived"),
     ]
 
+    PAYOUT_FREQUENCIES = [
+        ('weekly', 'Weekly (Every Monday)'),
+        ('monthly', 'Monthly (Specific Date)'),
+        ('manual', 'Manual Only (Owner decides)'),
+    ]
+
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True, blank=True)
     org_type = models.CharField(max_length=20, choices=ORG_TYPES, default="school")
@@ -42,6 +50,17 @@ class Organization(models.Model):
         null=True, blank=True,
         help_text="Number of months/years if not lifetime"
     )
+
+    payout_frequency = models.CharField(
+        max_length=20,
+        choices=PAYOUT_FREQUENCIES,
+        default='monthly'
+    )
+    payout_anchor_day = models.PositiveIntegerField(
+        default=DEFAULT_PAYOUT_DAY,
+        validators=[MinValueValidator(1), MaxValueValidator(28)]
+    )
+    auto_distribute = models.BooleanField(default=True)
 
     approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -141,7 +160,6 @@ class OrgMembership(models.Model):
         self.save()
 
     def sync_access(self):
-        # IMPORTS MOVED INSIDE TO PREVENT CIRCULAR DEPENDENCY
         from courses.models import Course, Enrollment
         from events.models import EventRegistration, Event
 

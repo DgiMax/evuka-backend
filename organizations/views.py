@@ -17,18 +17,17 @@ from payments.services.paystack import initialize_transaction
 
 from .models import Organization, OrgMembership, GuardianLink, OrgCategory, OrgLevel
 from .filters import OrganizationFilter
-from .permissions import IsOrgMember, IsOrgAdminOrOwner, IsOrgStaff, get_active_org
+from .permissions import IsOrgMember, IsOrgAdminOrOwner, get_active_org
 
 from .serializers import (
     OrganizationSerializer, OrgMembershipSerializer, GuardianLinkSerializer,
     OrgLevelSerializer, OrgCategorySerializer, OrganizationCreateSerializer,
     StudentEnrollmentSerializer, OrganizationListSerializer,
-    OrganizationDetailSerializer, OrgTeamMemberSerializer,
-    OrgAdminInvitationSerializer
+    OrganizationDetailSerializer, OrgTeamMemberSerializer
 )
 
-from org_community.models import OrgJoinRequest, OrgInvitation
-from org_community.serializers import OrgJoinRequestSerializer, OrgInvitationSerializer
+# Note: We do NOT import OrgInvitation/OrgJoinRequest here anymore.
+# Those are handled exclusively in the 'org_community' app to prevent circular deps and logic duplication.
 
 User = get_user_model()
 
@@ -48,11 +47,9 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     filterset_class = OrganizationFilter
 
     def get_queryset(self):
-        # Base: Public approved orgs
         queryset = Organization.objects.filter(approved=True)
 
         if self.request.user.is_authenticated:
-            # Add orgs the user is a member of (including drafts/pending)
             my_orgs = Organization.objects.filter(memberships__user=self.request.user)
             queryset = (queryset | my_orgs).distinct()
 
@@ -79,8 +76,6 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         return self.serializer_class
 
     def perform_destroy(self, instance):
-        # We override destroy to handle soft-deletion if needed, or simply let the model delete.
-        # Permission check happens in IsOrgAdminOrOwner via has_object_permission
         instance.delete()
 
     @action(detail=True, methods=['get'], url_path='details')
@@ -126,8 +121,6 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsModeratorOrSuperAdmin])
     def reject(self, request, slug=None):
         org = self.get_object()
-        # Soft delete or set status to rejected based on model logic?
-        # Model currently has no 'rejected' status, assuming delete=False means maybe just un-approve
         org.status = 'suspended'
         org.save()
         return Response({"status": "rejected"})
@@ -290,29 +283,6 @@ class OrgTeamViewSet(viewsets.ModelViewSet):
             role__in=allowed_roles
         ).select_related('user')
 
-    @action(detail=False, methods=['post'])
-    def invite(self, request):
-        active_org = getattr(self.request, "active_organization", None)
-        email = request.data.get('email')
-        role = request.data.get('role', 'tutor')
-        if not email:
-            return Response({"error": "Email is required."}, status=400)
-
-        try:
-            user_to_add = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response({"error": "User not found."}, status=404)
-
-        if OrgMembership.objects.filter(user=user_to_add, organization=active_org).exists():
-            return Response({"error": "User already member."}, status=400)
-
-        if OrgInvitation.objects.filter(invited_user=user_to_add, organization=active_org, status="pending").exists():
-            return Response({"error": "Invitation already sent."}, status=400)
-
-        OrgInvitation.objects.create(organization=active_org, invited_by=request.user, invited_user=user_to_add,
-                                     role=role, status="pending")
-        return Response({"status": f"Invitation sent to {email}."}, status=201)
-
 
 class ActiveOrganizationView(generics.RetrieveUpdateAPIView):
     serializer_class = OrganizationDetailSerializer
@@ -345,77 +315,6 @@ class OrganizationCreateView(CreateAPIView):
         organization = serializer.save()
         response_serializer = OrganizationSerializer(organization, context={'request': request})
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-
-
-class OrgJoinRequestViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = OrgJoinRequestSerializer
-    permission_classes = [IsOrgStaff]
-
-    def get_queryset(self):
-        active_org = getattr(self.request, "active_organization", None)
-        if not active_org:
-            slug = self.request.headers.get("X-Organization-Slug")
-            if slug:
-                try:
-                    active_org = Organization.objects.get(slug=slug)
-                    self.request.active_organization = active_org
-                except Organization.DoesNotExist:
-                    pass
-        if not active_org:
-            return OrgJoinRequest.objects.none()
-        return OrgJoinRequest.objects.filter(organization=active_org, status="pending").select_related('user')
-
-    @action(detail=True, methods=['post'])
-    @transaction.atomic
-    def approve(self, request, pk=None):
-        req = self.get_object()
-        if req.status != 'pending':
-            return Response({"error": "Not pending."}, status=400)
-
-        if OrgMembership.objects.filter(user=req.user, organization=req.organization).exists():
-            req.status = 'approved'
-            req.save()
-            return Response({"error": "Already member."}, status=400)
-
-        OrgMembership.objects.create(user=req.user, organization=req.organization, role='tutor', is_active=True)
-        req.status = 'approved'
-        req.save()
-        OrgInvitation.objects.filter(invited_user=req.user, organization=req.organization, status='pending').update(
-            status='rejected')
-        return Response({"status": "Approved."})
-
-    @action(detail=True, methods=['post'])
-    def reject(self, request, pk=None):
-        req = self.get_object()
-        req.status = 'rejected'
-        req.save()
-        return Response({"status": "Rejected."})
-
-
-class OrgSentInvitationsViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = OrgAdminInvitationSerializer
-    permission_classes = [IsOrgStaff]
-
-    def get_queryset(self):
-        active_org = getattr(self.request, "active_organization", None)
-        if not active_org:
-            slug = self.request.headers.get("X-Organization-Slug")
-            if slug:
-                try:
-                    active_org = Organization.objects.get(slug=slug)
-                    self.request.active_organization = active_org
-                except Organization.DoesNotExist:
-                    pass
-        if not active_org:
-            return OrgInvitation.objects.none()
-        return OrgInvitation.objects.filter(organization=active_org, status="pending").select_related('invited_user',
-                                                                                                      'invited_by')
-
-    @action(detail=True, methods=['post'])
-    def revoke(self, request, pk=None):
-        inv = self.get_object()
-        inv.delete()
-        return Response({"status": "Revoked."})
 
 
 class PublicOrgLevelListView(generics.ListAPIView):

@@ -3,9 +3,11 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from courses.models import Course
 from events.models import Event
-from org_community.models import OrgJoinRequest, OrgInvitation
+from org_community.models import OrgJoinRequest, AdvancedOrgInvitation
 from users.models import CreatorProfile
 from .models import Organization, OrgMembership, GuardianLink, OrgLevel, OrgCategory
+from .models_finance import TutorAgreement
+from .constants import MIN_TUTOR_SHARE_PERCENT
 
 User = get_user_model()
 
@@ -108,7 +110,8 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
             'logo', 'approved', 'status',
             'branding', 'policies', 'created_at', 'stats',
             'current_user_membership',
-            'membership_price', 'membership_period', 'membership_duration_value'
+            'membership_price', 'membership_period', 'membership_duration_value',
+            'payout_frequency', 'payout_anchor_day', 'auto_distribute'
         ]
         read_only_fields = ['slug', 'approved', 'created_at', 'updated_at', 'branding', 'policies']
 
@@ -165,6 +168,12 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
     categories = FormDataJSONField(required=False, write_only=True)
     branding = FormDataJSONField(required=False)
     policies = FormDataJSONField(required=False)
+    founder_commission_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2,
+        min_value=MIN_TUTOR_SHARE_PERCENT,
+        max_value=100,
+        required=True
+    )
 
     class Meta:
         model = Organization
@@ -172,7 +181,8 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
             'name', 'org_type', 'description', 'logo', 'status',
             'membership_price', 'membership_period', 'membership_duration_value',
             'branding', 'policies',
-            'levels', 'categories', 'slug'
+            'levels', 'categories', 'slug', 'founder_commission_percent',
+            'payout_frequency', 'payout_anchor_day', 'auto_distribute'
         ]
         read_only_fields = ['slug']
 
@@ -221,6 +231,7 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         levels_data = validated_data.pop('levels', [])
         categories_data = validated_data.pop('categories', [])
+        founder_comm = validated_data.pop('founder_commission_percent')
 
         organization = Organization.objects.create(**validated_data)
 
@@ -240,16 +251,23 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
             is_active=True, payment_status='paid'
         )
 
+        TutorAgreement.objects.create(
+            organization=organization,
+            user=user,
+            commission_percent=founder_comm,
+            is_active=True,
+            signed_by_user=True
+        )
+
         return organization
 
 
 class OrgAdminInvitationSerializer(serializers.ModelSerializer):
-    invited_user = OrgUserSerializer(read_only=True)
     invited_by = OrgUserSerializer(read_only=True)
 
     class Meta:
-        model = OrgInvitation
-        fields = ['id', 'invited_user', 'invited_by', 'role', 'status', 'created_at']
+        model = AdvancedOrgInvitation
+        fields = ['id', 'email', 'invited_by', 'gov_role', 'gov_status', 'is_tutor_invite', 'tutor_status', 'created_at']
 
 
 class StudentEnrollmentSerializer(serializers.Serializer):

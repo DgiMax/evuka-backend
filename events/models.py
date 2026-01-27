@@ -58,8 +58,8 @@ class Event(models.Model):
     meeting_link = models.URLField(blank=True)
     chat_room_id = models.CharField(max_length=100, unique=True, default=uuid.uuid4)
 
-    start_time = models.DateTimeField()
-    end_time = models.DateTimeField()
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
     timezone = models.CharField(max_length=50, default="Africa/Nairobi")
 
     who_can_join = models.CharField(

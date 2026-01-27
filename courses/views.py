@@ -293,12 +293,6 @@ class CourseDiscussionViewSet(viewsets.ModelViewSet):
 
 
 class TutorCourseViewSet(viewsets.ModelViewSet):
-    """
-    Tutor/Admin-facing viewset:
-    - Create, edit, and manage courses
-    - Context-aware (personal vs organization)
-    """
-
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = "slug"
@@ -410,7 +404,6 @@ class TutorCourseViewSet(viewsets.ModelViewSet):
         url_path="update-status",
     )
     def update_status(self, request, slug=None):
-        """Allows tutors/org admins to change course status (Draft, Review, Publish)."""
         course = self.get_object()
         user = request.user
         new_status = request.data.get("status")
@@ -458,11 +451,6 @@ class TutorCourseViewSet(viewsets.ModelViewSet):
         url_path="archive"
     )
     def archive_course(self, request, slug=None):
-        """
-        Toggles archive status.
-        If course is Archived -> moves to Draft (Unarchive).
-        If course is Published/Draft/Pending -> moves to Archived.
-        """
         course = self.get_object()
 
         if course.status == 'archived':
@@ -882,29 +870,21 @@ class QuizAttemptViewSet(viewsets.ViewSet):
 
 
 class CourseManagerViewSet(viewsets.GenericViewSet):
-    """
-    All-in-one management dashboard for a single course.
-    Uses the course slug as the primary lookup field.
-    Permissions are handled by IsTutorOrOrgAdmin (from live.permissions).
-    """
     queryset = Course.objects.all()
+    parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated, IsTutorOrOrgAdmin]
     lookup_field = "slug"
 
     def get_course_object(self):
-        """Helper to get the course and ensure the user is authorized."""
         return self.get_object()
 
     def retrieve(self, request, slug=None):
-        """Retrieves all data for the management dashboard."""
         course = self.get_course_object()
         serializer = CourseManagementDashboardSerializer(
             course,
             context={"request": request}
         )
         return Response(serializer.data)
-
-    # --- MODULES ---
 
     @action(detail=True, methods=["post"], url_path="modules")
     def create_module(self, request, slug=None):
@@ -916,7 +896,19 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         module = serializer.save(course=course, order=order)
         return Response(ModuleAtomicSerializer(module).data, status=status.HTTP_201_CREATED)
 
-    # --- LESSONS ---
+    @action(detail=True, methods=["patch", "delete"], url_path="modules/(?P<module_pk>[^/.]+)")
+    def manage_module_detail(self, request, slug=None, module_pk=None):
+        course = self.get_course_object()
+        module = get_object_or_404(course.modules, pk=module_pk)
+
+        if request.method == "DELETE":
+            module.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = ModuleAtomicSerializer(module, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        updated_module = serializer.save()
+        return Response(ModuleAtomicSerializer(updated_module).data)
 
     @action(detail=True, methods=["post"], url_path="lessons")
     def create_lesson(self, request, slug=None):
@@ -937,9 +929,7 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         url_path="lessons/(?P<lesson_pk>[^/.]+)"
     )
     def manage_lesson_detail(self, request, slug=None, lesson_pk=None):
-        """Merged endpoint to Update or Delete a specific Lesson."""
         course = self.get_course_object()
-        # Secure lookup: ensure lesson belongs to this course
         lesson = get_object_or_404(
             Lesson,
             pk=lesson_pk,
@@ -950,13 +940,39 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
             lesson.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # PATCH
         serializer = LessonCreateAtomicSerializer(lesson, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_lesson = serializer.save()
         return Response(LessonCreateAtomicSerializer(updated_lesson).data)
 
-    # --- QUIZZES ---
+    @action(detail=True, methods=["post"], url_path="resources")
+    def create_resource(self, request, slug=None):
+        course = self.get_course_object()
+        lesson_id = request.data.get("lesson")
+        lesson = get_object_or_404(Lesson, pk=lesson_id, module__course=course)
+
+        serializer = LessonResourceSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        max_order = lesson.resources.aggregate(Max('order'))['order__max']
+        order = (max_order or 0) + 1
+
+        resource = serializer.save(lesson=lesson, order=order)
+        return Response(LessonResourceSerializer(resource).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["patch", "delete"], url_path="resources/(?P<resource_pk>[^/.]+)")
+    def manage_resource_detail(self, request, slug=None, resource_pk=None):
+        course = self.get_course_object()
+        resource = get_object_or_404(LessonResource, pk=resource_pk, lesson__module__course=course)
+
+        if request.method == "DELETE":
+            resource.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        serializer = LessonResourceSerializer(resource, data=request.data, partial=True, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        updated_resource = serializer.save()
+        return Response(LessonResourceSerializer(updated_resource).data)
 
     @action(
         detail=True,
@@ -964,7 +980,6 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         url_path="lessons/(?P<lesson_pk>[^/.]+)/quizzes"
     )
     def create_quiz(self, request, slug=None, lesson_pk=None):
-        """Creates a new Quiz attached to a specific Lesson."""
         course = self.get_course_object()
         lesson = get_object_or_404(Lesson, pk=lesson_pk, module__course=course)
 
@@ -980,7 +995,6 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         url_path="quizzes/(?P<quiz_pk>[^/.]+)"
     )
     def manage_quiz_detail(self, request, slug=None, quiz_pk=None):
-        """Merged endpoint to Update or Delete a specific Quiz."""
         course = self.get_course_object()
         quiz = get_object_or_404(Quiz, pk=quiz_pk, lesson__module__course=course)
 
@@ -988,13 +1002,10 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
             quiz.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # PATCH
         serializer = QuizCreateUpdateSerializer(quiz, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_quiz = serializer.save()
         return Response(QuizCreateUpdateSerializer(updated_quiz).data)
-
-    # --- ASSIGNMENTS ---
 
     @action(detail=True, methods=["post"], url_path="assignments")
     def create_assignment(self, request, slug=None):
@@ -1014,7 +1025,6 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
         url_path="assignments/(?P<assignment_pk>[^/.]+)"
     )
     def manage_assignment_detail(self, request, slug=None, assignment_pk=None):
-        """Merged endpoint to Update or Delete a specific Assignment."""
         course = self.get_course_object()
         assignment = get_object_or_404(
             CourseAssignment.objects.filter(module__course=course),
@@ -1025,13 +1035,10 @@ class CourseManagerViewSet(viewsets.GenericViewSet):
             assignment.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # PATCH
         serializer = CourseAssignmentAtomicSerializer(assignment, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         updated_assignment = serializer.save()
         return Response(CourseAssignmentAtomicSerializer(updated_assignment).data)
-
-    # --- SUBMISSIONS & GRADING ---
 
     @action(detail=True, methods=["get"], url_path="submissions-list")
     def list_all_submissions(self, request, slug=None):
@@ -1137,3 +1144,40 @@ class AssignmentSubmissionViewSet(viewsets.GenericViewSet):
 
         return Response(AssignmentSubmissionManagerSerializer(updated_submission).data,
                         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class CourseSearchAPIView(APIView):
+    """
+    Independent API for searching courses a user manages.
+    Filters by Organization if org_slug is provided, otherwise searches Personal courses.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        query = request.query_params.get('q', '')
+        org_slug = request.query_params.get('org_slug', None)
+        user = request.user
+
+        queryset = Course.objects.filter(
+            Q(creator=user) | Q(instructors__in=[user])
+        ).distinct()
+
+        if org_slug:
+            queryset = queryset.filter(organization__slug=org_slug)
+        else:
+            queryset = queryset.filter(organization__isnull=True)
+
+        if query:
+            queryset = queryset.filter(title__icontains=query)
+
+        courses = queryset.only('id', 'title', 'thumbnail')[:10]
+
+        data = []
+        for course in courses:
+            data.append({
+                "id": course.id,
+                "title": course.title,
+                "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+            })
+
+        return Response(data)

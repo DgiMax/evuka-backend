@@ -7,6 +7,7 @@ from .views import (
     PublicOrgLevelListView,
     check_organization_access, OrganizationTeamView, OrgCategoryViewSet, OrgLevelViewSet
 )
+from . import views_finance
 
 router = routers.SimpleRouter()
 router.register(r"memberships", OrgMembershipViewSet, basename="membership")
@@ -24,6 +25,8 @@ urlpatterns = [
     path('check-access/<slug:slug>/', check_organization_access, name="check_organization_access"),
     path('org-team/<slug:slug>/', OrganizationTeamView.as_view(), name='org-team-public'),
     path('<slug:slug>/public-levels/', PublicOrgLevelListView.as_view(), name='org-public-levels'),
+
+    path('<slug:org_slug>/finance/dashboard/', views_finance.get_tutor_earnings_dashboard, name='tutor-earnings-dashboard'),
 
     path(r'', include(router.urls)),
     path(r'', include(org_router.urls)),

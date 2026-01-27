@@ -1,66 +1,66 @@
 import json
 from datetime import datetime, timedelta
 from django.db import transaction
-from django.conf import settings
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.filters import SearchFilter, OrderingFilter
 from rest_framework.parsers import MultiPartParser, FormParser
-from django_filters.rest_framework import DjangoFilterBackend
 from livekit import api
 
-from organizations.models import OrgMembership
-from courses.models import Enrollment
 from .models import LiveClass, LiveLesson, LessonResource
+from courses.models import Course, Enrollment
+from organizations.models import OrgMembership
+from .permissions import IsTutorOrOrgAdmin
 from .serializers import (
-    LiveClassSerializer,
+    LiveClassManagementSerializer,
+    CourseLiveHubSerializer,
     LiveLessonSerializer,
-    LessonResourceSerializer,
-    CourseWithLiveClassesSerializer
+    LessonResourceSerializer
 )
 from .services import LiveClassScheduler
-from .permissions import IsTutorOrOrgAdmin
 
 LK_API_KEY = "devkey"
 LK_API_SECRET = "SecureLiveKitSecretKey2026EvukaProject"
 LK_SERVER_URL = "ws://127.0.0.1:7880"
 
 
-class LiveClassViewSet(viewsets.ModelViewSet):
-    queryset = LiveClass.objects.all()
-    serializer_class = LiveClassSerializer
+class LiveClassManagementViewSet(viewsets.ModelViewSet):
+    serializer_class = LiveClassManagementSerializer
     permission_classes = [permissions.IsAuthenticated, IsTutorOrOrgAdmin]
     lookup_field = "slug"
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    search_fields = ["title", "description"]
-    ordering_fields = ["start_date", "created_at"]
 
     def get_queryset(self):
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
-        qs = LiveClass.objects.select_related("organization", "creator", "course").prefetch_related("lessons")
+        course_slug = self.request.query_params.get('course_slug')
+
+        qs = LiveClass.objects.select_related("course").prefetch_related("lessons")
 
         if active_org:
             membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
             if not membership:
                 return qs.none()
             if membership.role in ["admin", "owner"]:
-                return qs.filter(organization=active_org)
-            return qs.filter(organization=active_org, creator=user)
-        return qs.filter(creator=user, organization__isnull=True)
+                qs = qs.filter(organization=active_org)
+            else:
+                qs = qs.filter(organization=active_org, creator=user)
+        else:
+            qs = qs.filter(creator=user, organization__isnull=True)
+
+        if course_slug:
+            qs = qs.filter(course__slug=course_slug)
+
+        return qs
 
     @transaction.atomic
     def perform_create(self, serializer):
-        user = self.request.user
-        active_org = getattr(self.request, "active_organization", None)
-
         instance = serializer.save(
-            creator=user,
-            organization=active_org,
-            creator_profile=getattr(user, "creator_profile", None),
+            creator=self.request.user,
+            organization=getattr(self.request, "active_organization", None),
+            creator_profile=getattr(self.request.user, "creator_profile", None)
         )
-
         scheduler = LiveClassScheduler(instance)
         scheduler.schedule_lessons(months_ahead=3)
 
@@ -69,6 +69,44 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         instance = serializer.save()
         scheduler = LiveClassScheduler(instance)
         scheduler.update_schedule()
+
+
+class StudentLiveHubViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = CourseLiveHubSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        active_org = getattr(self.request, "active_organization", None)
+
+        enrolled_course_ids = Enrollment.objects.filter(
+            user=user, status='active'
+        ).values_list('course_id', flat=True)
+
+        qs = Course.objects.filter(id__in=enrolled_course_ids).distinct()
+
+        if active_org:
+            qs = qs.filter(organization=active_org)
+        else:
+            qs = qs.filter(organization__isnull=True)
+
+        return qs.prefetch_related('live_classes', 'live_classes__lessons')
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        now = timezone.now()
+
+        live_now_count = LiveLesson.objects.filter(
+            live_class__course__id__in=self.get_queryset().values_list('id', flat=True),
+            start_datetime__lte=now + timedelta(minutes=20),
+            end_datetime__gt=now,
+            is_cancelled=False
+        ).distinct().count()
+
+        return Response({
+            "live_now_count": live_now_count,
+            "courses": response.data
+        })
 
 
 class LiveLessonViewSet(
@@ -113,7 +151,7 @@ class LiveLessonViewSet(
         is_host = (user == lesson.live_class.creator)
 
         if not is_host:
-            now = datetime.now(tz=lesson.start_datetime.tzinfo)
+            now = timezone.now()
             buffer_start = lesson.start_datetime - timedelta(minutes=20)
 
             if now < buffer_start:
@@ -166,13 +204,11 @@ class LiveLessonViewSet(
             return Response({"error": "Unauthorized"}, status=403)
 
         add_minutes = int(request.data.get("minutes", 15))
-
         if lesson.extension_minutes + add_minutes > 60:
-            return Response({"error": "Cannot extend more than 1 hour total"}, status=400)
+            return Response({"error": "Limit reached"}, status=400)
 
         lesson.extension_minutes += add_minutes
         lesson.save()
-
         return Response({"new_end_time": lesson.effective_end_datetime})
 
     @action(detail=True, methods=["post"])
@@ -191,14 +227,11 @@ class LiveLessonViewSet(
         lesson.save()
 
         lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
-        room_meta = json.dumps({
-            "mic_locked": lesson.is_mic_locked,
-            "camera_locked": lesson.is_camera_locked
-        })
+        room_meta = json.dumps({"mic_locked": lesson.is_mic_locked, "camera_locked": lesson.is_camera_locked})
 
         try:
             lkapi.room.update_room_metadata(lesson.chat_room_id, metadata=room_meta)
-        except Exception:
+        except:
             pass
 
         return Response({"status": "updated"})
@@ -210,40 +243,16 @@ class LiveLessonViewSet(
             return Response({"error": "Unauthorized"}, status=403)
 
         file = request.FILES.get('file')
-        title = request.data.get('title', file.name)
+        if not file: return Response({"error": "No file"}, status=400)
 
-        resource = LessonResource.objects.create(lesson=lesson, file=file, title=title)
+        resource = LessonResource.objects.create(lesson=lesson, file=file, title=request.data.get('title', file.name))
         return Response(LessonResourceSerializer(resource).data)
 
-    @action(detail=False, methods=["post"], url_path="moderate/mute")
-    def mute_participant(self, request):
-        room_name = request.data.get("room")
-        identity = request.data.get("identity")
-
-        if not request.user.is_staff:
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator:
             return Response({"error": "Unauthorized"}, status=403)
-
-        try:
-            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
-            lkapi.room.remove_participant(
-                room=room_name,
-                identity=identity
-            )
-            return Response({"status": "participant removed"})
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
-
-
-class AllLiveClassesViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = CourseWithLiveClassesSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-        enrolled_courses = Enrollment.objects.filter(
-            user=user, status='active'
-        ).values_list('course', flat=True)
-
-        return LiveClass.objects.filter(
-            course__in=enrolled_courses
-        ).prefetch_related('lessons').order_by('-created_at')
+        lesson.is_cancelled = True
+        lesson.save()
+        return Response({"status": "cancelled"})

@@ -2,14 +2,17 @@ import logging
 import requests
 from decimal import Decimal
 from django.conf import settings
-from django.core.cache import cache  # <--- Added for caching bank list
+from django.core.cache import cache
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Sum
 
+from organizations.models import Organization, OrgMembership
+from organizations.models_finance import PendingEarning
 from .models import Wallet, Payout
 from users.models import BankingDetails
 from .serializers import (
@@ -24,31 +27,80 @@ logger = logging.getLogger(__name__)
 
 class RevenueDashboardView(APIView):
     """
-    Consolidated Dashboard Data:
-    1. Wallet Balance & History
-    2. Banking Details (if verified)
-    3. Recent Payout Requests
+    Context-Aware Dashboard:
+    - Personal Context: Shows Wallet + Personal Banking Details.
+    - Org Context (Admin Only): Shows Org Wallet + Liability Overview (Pending Payouts).
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
+        org_slug = request.headers.get("X-Organization-Slug")
 
-        # 1. Get or Create Personal Wallet
+        if org_slug:
+            return self.get_org_dashboard(request, org_slug)
+
+        return self.get_personal_dashboard(request)
+
+    def get_personal_dashboard(self, request):
+        user = request.user
         wallet, _ = Wallet.objects.get_or_create(owner_user=user)
 
-        # 2. Get Banking Details
         banking_data = None
         if hasattr(user, 'banking_details'):
             banking_data = BankingDetailsSerializer(user.banking_details).data
+        elif BankingDetails.objects.filter(user=user).exists():
+            banking_data = BankingDetailsSerializer(BankingDetails.objects.get(user=user)).data
 
-        # 3. Get Recent Payouts
         recent_payouts = Payout.objects.filter(wallet=wallet).order_by('-created_at')[:5]
 
         return Response({
+            "context": "personal",
             "wallet": WalletSerializer(wallet).data,
             "banking": banking_data,
             "payouts": PayoutSerializer(recent_payouts, many=True).data
+        })
+
+    def get_org_dashboard(self, request, slug):
+        org = get_object_or_404(Organization, slug=slug)
+
+        # 1. Permission Check
+        is_admin = OrgMembership.objects.filter(
+            user=request.user,
+            organization=org,
+            role__in=['owner', 'admin'],
+            is_active=True
+        ).exists()
+
+        if not is_admin:
+            return Response(
+                {"detail": "Access denied. Only Admins can view the Organization Wallet."},
+                status=403
+            )
+
+        # 2. Get Org Wallet (Cash on Hand)
+        wallet, _ = Wallet.objects.get_or_create(owner_org=org)
+
+        # 3. Calculate Liabilities (Money owed to tutors)
+        total_pending_liability = PendingEarning.objects.filter(
+            organization=org,
+            is_cleared=False
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        # 4. Breakdown of who is owed what (Top 5 for preview)
+        pending_breakdown = PendingEarning.objects.filter(
+            organization=org,
+            is_cleared=False
+        ).values('tutor__username', 'amount', 'created_at').order_by('-created_at')[:10]
+
+        return Response({
+            "context": "organization",
+            "wallet": WalletSerializer(wallet).data,
+            "liabilities": {
+                "total_pending_payouts": total_pending_liability,
+                "net_available_funds": wallet.balance - total_pending_liability,
+                "recent_pending_earnings": list(pending_breakdown)
+            },
+            "payouts": []  # Org doesn't withdraw to bank, it distributes to members
         })
 
 

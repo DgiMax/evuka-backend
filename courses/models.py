@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db.models import Count, Q
+from django.core.exceptions import ValidationError
 
 from live.models import LiveClass
 from organizations.models import Organization, OrgLevel, OrgCategory
@@ -318,7 +319,7 @@ class Lesson(models.Model):
     organization = models.ForeignKey(Organization, related_name="lessons", on_delete=models.CASCADE, null=True,
                                      blank=True)
     title = models.CharField(max_length=255)
-    content = models.TextField(help_text="Markdown supported")
+    content = models.TextField(help_text="Markdown supported", blank=True, null=True)
     video_file = models.FileField(upload_to='lesson_videos/', blank=True, null=True)
     order = models.PositiveIntegerField(default=0)
     estimated_duration_minutes = models.PositiveIntegerField(default=0, help_text="Estimated duration in minutes")
@@ -338,9 +339,9 @@ class LessonResource(models.Model):
         ('book_ref', 'Book Reference'),
     ]
 
-    lesson = models.ForeignKey(Lesson, related_name="resources", on_delete=models.CASCADE)
+    lesson = models.ForeignKey('Lesson', related_name="resources", on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
-    description = models.TextField(blank=True, help_text="Instructions or context for this resource.")
+    description = models.TextField(blank=True)
     resource_type = models.CharField(max_length=20, choices=RESOURCE_TYPES, default='file')
     order = models.PositiveIntegerField(default=0)
 
@@ -364,9 +365,10 @@ class LessonResource(models.Model):
         return f"{self.title} ({self.resource_type})"
 
     def save(self, *args, **kwargs):
-        if self.resource_type == 'book_ref' and self.course_book and self.lesson.module:
-            if self.course_book.course_id != self.lesson.module.course_id:
-                raise ValueError("Cannot link a book that is not added to this course's curriculum.")
+        if self.resource_type == 'book_ref' and self.course_book:
+            if hasattr(self, 'lesson') and self.lesson.module_id:
+                if self.course_book.course_id != self.lesson.module.course_id:
+                    raise ValidationError("Cannot link a book that is not added to this course's curriculum.")
         super().save(*args, **kwargs)
 
 

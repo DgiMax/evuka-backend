@@ -186,6 +186,13 @@ class EventSerializer(serializers.ModelSerializer):
         ).exists()
 
 
+import json
+from rest_framework import serializers
+from django.utils import timezone
+from .models import Event, EventLearningObjective, EventAgenda, EventRule
+from courses.models import Course
+from .serializers import EventSerializer, EventLearningObjectiveSerializer, EventAgendaSerializer, EventRuleSerializer
+
 class CreateEventSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(
         queryset=Course.objects.all()
@@ -230,6 +237,26 @@ class CreateEventSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["slug", "created_at", "updated_at"]
 
+    def to_internal_value(self, data):
+        if hasattr(data, 'dict'):
+            data = data.dict()
+
+        json_fields = ['learning_objectives', 'agenda', 'rules']
+        for field in json_fields:
+            if field in data and isinstance(data[field], str) and data[field]:
+                try:
+                    data[field] = json.loads(data[field])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if 'is_paid' in data and isinstance(data['is_paid'], str):
+            data['is_paid'] = data['is_paid'].lower() == 'true'
+
+        if 'registration_open' in data and isinstance(data['registration_open'], str):
+            data['registration_open'] = data['registration_open'].lower() == 'true'
+
+        return super().to_internal_value(data)
+
     def validate(self, attrs):
         start = attrs.get("start_time")
         end = attrs.get("end_time")
@@ -237,11 +264,11 @@ class CreateEventSerializer(serializers.ModelSerializer):
         who_can_join = attrs.get("who_can_join")
 
         if start and end and start >= end:
-            raise serializers.ValidationError("End time must be after start time.")
+            raise serializers.ValidationError({"end_time": "End time must be after start time."})
 
         if who_can_join == "org_students" and (not course or not getattr(course, "organization", None)):
             raise serializers.ValidationError({
-                "who_can_join": "You can only select 'Organization Students' if the course belongs to an organization."
+                "who_can_join": "Organization Students can only be selected if the course belongs to an organization."
             })
 
         return attrs
@@ -272,7 +299,7 @@ class CreateEventSerializer(serializers.ModelSerializer):
                 [EventRule(event=event, **rule) for rule in rules_data]
             )
 
-        if event.event_status == "pending_approval" and timezone.now() >= event.start_time:
+        if event.event_status == "pending_approval" and event.start_time and timezone.now() >= event.start_time:
             event.event_status = "cancelled"
             event.save()
 

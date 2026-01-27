@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.shortcuts import get_object_or_404
 from django.utils.text import slugify
+from django.db.models.functions import TruncMonth
 from django.conf import settings
 from rest_framework import generics, status, permissions
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -13,7 +14,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework import viewsets, mixins, permissions
 from rest_framework.decorators import action
-from django.db.models import Count, Sum, Q, Case, When, DecimalField
+from django.db.models import Count, Sum, Q, Case, When, DecimalField, Avg
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.template.loader import render_to_string
@@ -21,6 +22,7 @@ from django.utils.html import strip_tags
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from datetime import timedelta
 
 from courses.models import Course, Enrollment, LessonProgress
 from events.models import Event
@@ -43,7 +45,7 @@ from .serializers import (
     DashboardCourseMinimalSerializer, WalletSerializer, TransactionSerializer,
     PayoutSerializer, CreatorProfilePublicSerializer, StudentProfileReadSerializer, NewsletterSubscriberSerializer,
     GoogleLoginSerializer, UserDetailSerializer, PublicTutorProfileSerializer, BankingDetailsInputSerializer,
-    BankingDetailsViewSerializer, InstructorSearchSerializer,
+    BankingDetailsViewSerializer, InstructorSearchSerializer, CourseAnalyticsSerializer, EventAnalyticsSerializer,
 )
 from users.serializers import WebSocketTokenSerializer
 
@@ -704,87 +706,43 @@ class CreatorProfileManageView(generics.RetrieveUpdateAPIView, generics.CreateAP
 
 
 class TutorDashboardView(APIView):
-    """
-    Context-aware dashboard for Tutors and Org Admins.
-    Returns metrics and lists based on the active organization (or lack thereof).
-    """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, format=None):
+    def get(self, request):
         user = request.user
         active_org = getattr(request, "active_organization", None)
         now = timezone.now()
 
-        # 1. Context Switching Logic
         if active_org:
             membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
             if not membership:
-                return Response({"error": "Not a member of this organization"}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"error": "Unauthorized context"}, status=status.HTTP_403_FORBIDDEN)
 
             is_admin = membership.role in ["admin", "owner"]
-
             if is_admin:
                 courses_qs = Course.objects.filter(organization=active_org)
                 events_qs = Event.objects.filter(course__organization=active_org)
-                context_label = "Organization Admin View"
             else:
                 courses_qs = Course.objects.filter(organization=active_org, creator=user)
                 events_qs = Event.objects.filter(course__organization=active_org, organizer=user)
-                context_label = "Organization Tutor View"
         else:
-            # Independent Tutor View
             courses_qs = Course.objects.filter(organization__isnull=True, creator=user)
             events_qs = Event.objects.filter(course__organization__isnull=True, organizer=user)
-            context_label = "Personal Tutor View"
 
-        # 2. Metrics Calculation
-        total_courses = courses_qs.count()
-        total_events = events_qs.count()
-        upcoming_events_count = events_qs.filter(start_time__gte=now).count()
+        metrics = self._calculate_metrics(courses_qs, events_qs, active_org, now)
 
-        total_students = Enrollment.objects.filter(
-            course__in=courses_qs,
-            status='active'
-        ).values('user').distinct().count()
-
-        # Calculate active tutors (Only relevant for Org Admins)
-        active_tutors_count = 0
-        if active_org and is_admin:
-            active_tutors_count = OrgMembership.objects.filter(
-                organization=active_org,
-                role__in=['tutor', 'admin', 'owner'],
-                is_active=True
-            ).count()
-        elif active_org or not active_org:
-            active_tutors_count = 1
-
-        # Calculate Total Revenue
-        revenue_agg = Enrollment.objects.filter(
-            course__in=courses_qs,
-            status='active'
-        ).aggregate(
-            total=Coalesce(Sum('course__price'), 0, output_field=DecimalField())
-        )
-        total_revenue = revenue_agg['total']
-
-        # 3. Fetch Lists
-
-        # Live Classes: Ongoing OR Future (end_datetime >= now)
-        # We assume if the end time hasn't passed, it's either happening now or in the future.
-        upcoming_classes_qs = LiveLesson.objects.filter(
+        upcoming_classes = LiveLesson.objects.filter(
             live_class__course__in=courses_qs,
             is_cancelled=False,
-            end_datetime__gte=now  # Captures both ONGOING and FUTURE
-        ).select_related(
-            'live_class', 'live_class__course'
-        ).order_by('start_datetime')[:10]
+            end_datetime__gte=now
+        ).select_related('live_class', 'live_class__course').order_by('start_datetime')[:5]
 
-        upcoming_events_list_qs = events_qs.filter(
-            start_time__gte=now
+        upcoming_events = events_qs.filter(
+            start_time__gte=now,
+            event_status="approved"
         ).order_by('start_time')[:5]
 
-        # Best Performing Courses (by student count)
-        best_courses_qs = courses_qs.annotate(
+        best_courses = courses_qs.annotate(
             student_count=Count('enrollments', filter=Q(enrollments__status='active')),
             revenue=Coalesce(
                 Sum('enrollments__course__price', filter=Q(enrollments__status='active')),
@@ -793,56 +751,114 @@ class TutorDashboardView(APIView):
             )
         ).order_by('-student_count')[:5]
 
-        # 4. Serialize Response
-        data = {
-            "context": context_label,
-            "metrics": {
-                "total_courses": total_courses,
-                "active_tutors": active_tutors_count,
-                "active_students": total_students,
-                "total_revenue": total_revenue,
-                "upcoming_events_count": upcoming_events_count,
-                "total_events": total_events,
-            },
-            "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes_qs, many=True,
-                                                              context={'request': request}).data,
-            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events_list_qs, many=True,
-                                                               context={'request': request}).data,
-            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses_qs, many=True,
-                                                                        context={'request': request}).data,
-        }
+        return Response({
+            "metrics": metrics,
+            "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes, many=True, context={'request': request}).data,
+            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events, many=True, context={'request': request}).data,
+            "best_performing_courses": DashboardCourseMinimalSerializer(best_courses, many=True, context={'request': request}).data,
+        })
 
-        return Response(data, status=status.HTTP_200_OK)
+    def _calculate_metrics(self, courses_qs, events_qs, active_org, now):
+        total_students = Enrollment.objects.filter(
+            course__in=courses_qs,
+            status='active'
+        ).values('user').distinct().count()
+
+        revenue_total = Enrollment.objects.filter(
+            course__in=courses_qs,
+            status='active'
+        ).aggregate(
+            total=Coalesce(Sum('course__price'), 0, output_field=DecimalField())
+        )['total']
+
+        active_tutors = 1
+        if active_org:
+            active_tutors = OrgMembership.objects.filter(
+                organization=active_org,
+                role__in=['tutor', 'admin', 'owner'],
+                is_active=True
+            ).count()
+
+        return {
+            "total_courses": courses_qs.count(),
+            "active_students": total_students,
+            "total_revenue": float(revenue_total),
+            "upcoming_events": events_qs.filter(start_time__gte=now).count(),
+            "active_tutors": active_tutors
+        }
 
 
 class TutorAnalyticsView(APIView):
-    """
-    Detailed analytics view.
-    (Extends the dashboard summary with deeper data)
-    """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, format=None):
+    def get(self, request):
         user = request.user
+        course_id = request.query_params.get('course_id')
         active_org = getattr(request, "active_organization", None)
 
+        if course_id:
+            return self._get_course_specific_analytics(user, course_id)
+
+        return self._get_general_dashboard_analytics(user, active_org)
+
+    def _get_general_dashboard_analytics(self, user, active_org):
         if active_org:
-            courses_qs = Course.objects.filter(organization=active_org)
+            courses = Course.objects.filter(organization=active_org)
+            enrollment_qs = Enrollment.objects.filter(course__organization=active_org)
+            events = Event.objects.filter(course__organization=active_org)
         else:
-            courses_qs = Course.objects.filter(organization__isnull=True, creator=user)
+            courses = Course.objects.filter(organization__isnull=True, creator=user)
+            enrollment_qs = Enrollment.objects.filter(course__creator=user)
+            events = Event.objects.filter(organizer=user)
 
-        top_courses = courses_qs.annotate(
-             total_students=Count('enrollments'),
-             active_students=Count('enrollments', filter=Q(enrollments__status='active')),
-             total_revenue=Coalesce(Sum('enrollments__course__price'), 0, output_field=DecimalField())
-        ).order_by('-total_revenue')[:10]
+        six_months_ago = timezone.now() - timedelta(days=180)
+        trends = enrollment_qs.filter(date_joined__gte=six_months_ago) \
+            .annotate(month=TruncMonth('date_joined')) \
+            .values('month') \
+            .annotate(
+                enrollments=Count('id'),
+                revenue=Sum('course__price')
+            ).order_by('month')
 
-        data = {
-             "top_courses_detailed": list(top_courses.values(
-                 'title', 'total_students', 'active_students', 'total_revenue', 'rating_avg'
-             ))
-        }
-        return Response(data, status=status.HTTP_200_OK)
+        course_data = CourseAnalyticsSerializer(courses, many=True).data
+        event_data = EventAnalyticsSerializer(events[:5], many=True).data
+
+        total_course_rev = sum(c['revenue_metrics']['total'] for c in course_data)
+        total_event_rev = sum(e['registration_stats']['revenue'] for e in event_data)
+
+        return Response({
+            "kpis": {
+                "total_revenue": total_course_rev + total_event_rev,
+                "total_enrollments": sum(c['student_metrics']['total'] for c in course_data),
+                "active_events": events.filter(event_status='approved').count(),
+                "avg_rating": courses.aggregate(Avg('rating_avg'))['rating_avg__avg'] or 0
+            },
+            "trends": list(trends),
+            "course_breakdown": course_data,
+            "upcoming_events": event_data
+        })
+
+    def _get_course_specific_analytics(self, user, course_id):
+        course = Course.objects.filter(Q(creator=user) | Q(instructors__in=[user]), id=course_id).first()
+
+        if not course:
+            return Response({"error": "Course not found or access denied"}, status=status.HTTP_404_NOT_FOUND)
+
+        events = course.events.all().order_by('-start_time')
+
+        enrollment_trend = Enrollment.objects.filter(course=course) \
+            .annotate(month=TruncMonth('date_joined')) \
+            .values('month') \
+            .annotate(
+                enrollments=Count('id'),
+                revenue=Sum('course__price')
+            ).order_by('month')
+
+        return Response({
+            "course_info": CourseAnalyticsSerializer(course).data,
+            "trends": list(enrollment_trend),
+            "related_events": EventAnalyticsSerializer(events, many=True).data
+        })
 
 
 class PublicTutorViewSet(mixins.RetrieveModelMixin,

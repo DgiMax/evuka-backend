@@ -4,17 +4,15 @@ from .views import (
     OrganizationDiscoveryViewSet,
     RequestToJoinView,
     OrgJoinRequestViewSet,
-    UserInvitationsViewSet,
-    UserJoinRequestViewSet, OrgSentInvitationsViewSet
+    InvitationViewSet,
+    OrgSentInvitationsViewSet
 )
 
 router = DefaultRouter()
 router.register(r'discover', OrganizationDiscoveryViewSet, basename='org-discover')
-router.register(r'my-invitations', UserInvitationsViewSet, basename='my-invitations')
-router.register(r'my-join-requests', UserJoinRequestViewSet, basename='my-join-requests')
-
-router.register(r'manage/requests', OrgJoinRequestViewSet, basename='org-manage-requests')
+router.register(r'invitations', InvitationViewSet, basename='invitations')
 router.register(r'manage/invitations', OrgSentInvitationsViewSet, basename='org-manage-invitations')
+router.register(r'manage/requests', OrgJoinRequestViewSet, basename='org-manage-requests')
 
 urlpatterns = [
     path('request-join/', RequestToJoinView.as_view(), name='org-request-join'),
