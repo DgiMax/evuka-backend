@@ -166,14 +166,14 @@ class PublicEventViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({"error": "This is a physical event. Please use your ticket to check in."}, status=400)
 
         now = timezone.now()
-        buffer_time = event.start_time - timedelta(minutes=20)
+        buffer_time = event.start_time - timedelta(hours=1)
 
         if event.organizer != user:
             if now < buffer_time:
                 minutes_left = int((buffer_time - now).total_seconds() / 60)
                 return Response({
                     "error": "too_early",
-                    "message": f"Event room opens in {minutes_left} minutes.",
+                    "message": f"The event room will open 1 hour before start time. Please return in {minutes_left} minutes.",
                     "open_at": buffer_time
                 }, status=403)
 

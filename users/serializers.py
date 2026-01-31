@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
-from django.db.models import Sum, Case, When
+from django.db.models import Sum, Case, When, Avg
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -623,6 +623,53 @@ class PublicTutorProfileSerializer(serializers.ModelSerializer):
         if total_ratings_count > 0:
             return round(total_rating_sum / total_ratings_count, 1)
         return 0.0
+
+
+class PublicPublisherProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    books = serializers.SerializerMethodField()
+
+    total_students = serializers.SerializerMethodField()  # Frontend calls them 'Students' or 'Readers'
+    total_reviews = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PublisherProfile
+        fields = [
+            'username',
+            'display_name',
+            'headline',
+            'bio',
+            'profile_image',
+            'intro_video',
+            'website',
+            'is_verified',
+            'total_students',
+            'total_reviews',
+            'average_rating',
+            'books',
+        ]
+
+    def get_books(self, obj):
+        """Return only Published books associated with this publisher."""
+        from books.serializers import BookListSerializer
+        books = obj.books.filter(status='published').order_by('-created_at')
+        return BookListSerializer(books, many=True, context=self.context).data
+
+    def get_total_students(self, obj):
+        """Sum of sales/readers across all published books."""
+        return obj.books.filter(status='published').aggregate(
+            total=Sum('sales_count')
+        )['total'] or 0
+
+    def get_total_reviews(self, obj):
+        """Sum of readers/viewers who interacted."""
+        return obj.books.filter(status='published').count()
+
+    def get_average_rating(self, obj):
+        """Average rating across all published books."""
+        stats = obj.books.filter(status='published').aggregate(avg=Avg('rating_avg'))
+        return round(stats['avg'] or 0.0, 1)
 
 
 class PublisherProfileSerializer(serializers.ModelSerializer):

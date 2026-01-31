@@ -366,3 +366,45 @@ class OrganizationTeamView(APIView):
         tutors = [m for m in serializer.data if m['role'] == 'tutor']
 
         return Response({"management": management, "tutors": tutors}, status=200)
+
+
+class ValidateOrgContextView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, slug):
+        org = Organization.objects.filter(slug=slug).first()
+
+        if not org:
+            return Response({
+                "error": "not_found",
+                "message": "This organization does not exist."
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        membership = OrgMembership.objects.filter(
+            user=request.user,
+            organization=org
+        ).first()
+
+        if not membership:
+            return Response({
+                "error": "no_membership",
+                "message": "You are not a member of this organization."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if org.status == 'draft' and membership.role == 'student':
+            return Response({
+                "error": "draft_mode",
+                "message": f"{org.name} is currently in draft mode and not yet published.",
+                "org_name": org.name
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        is_draft = org.status == 'draft'
+
+        return Response({
+            "status": "success",
+            "org_name": org.name,
+            "role": membership.role,
+            "is_active": membership.is_active,
+            "org_status": org.status,
+            "is_draft": is_draft
+        }, status=status.HTTP_200_OK)

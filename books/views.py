@@ -218,3 +218,33 @@ class BookLookupView(generics.ListAPIView):
     search_fields = ['title', 'authors', 'isbn']
     pagination_class = None
 
+
+class BookFiltersView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        categories = BookCategory.objects.all().order_by('name')
+        subcategories = BookSubCategory.objects.select_related('category').all()
+
+        return Response({
+            "globalCategories": BookCategorySerializer(categories, many=True).data,
+            "globalSubCategories": [
+                {
+                    "id": sub.id,
+                    "name": sub.name,
+                    "slug": sub.slug,
+                    "parent_slug": sub.category.slug
+                } for sub in subcategories
+            ],
+            "globalLevels": [
+                {"id": "beginner", "name": "Beginner"},
+                {"id": "intermediate", "name": "Intermediate"},
+                {"id": "advanced", "name": "Advanced"},
+                {"id": "all_levels", "name": "All Levels"},
+            ],
+            "price": {
+                "min": 0,
+                "max": 20000
+            }
+        })
+

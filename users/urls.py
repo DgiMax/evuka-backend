@@ -13,11 +13,11 @@ from .views import (
     LogoutView,
     CurrentUserView,
     CookieTokenRefreshView,
-    DashboardAPIView,
+    StudentDashboardAPIView,
     CreatorProfileManageView,
     StudentProfileManageView, TutorDashboardView, TutorAnalyticsView,
     PublicTutorViewSet, GetWebSocketTokenView, NewsletterSubscribeView, GoogleLoginView, PublicTutorProfileView,
-    PayoutMethodView, SearchInstructorsView,
+    PayoutMethodView, SearchInstructorsView, PublicPublisherProfileView,
 )
 
 app_name = "users"
@@ -42,11 +42,12 @@ urlpatterns = [
     path('newsletter/subscribe/', NewsletterSubscribeView.as_view(), name='newsletter-subscribe'),
 
     path("me/", CurrentUserView.as_view(), name="current-user"),
-    path('dashboard/', DashboardAPIView.as_view(), name='api-dashboard'),
+    path('dashboard/', StudentDashboardAPIView.as_view(), name='api-dashboard'),
 
     path('profile/tutor/', CreatorProfileManageView.as_view(), name='manage-tutor-profile'),
     path('profile/student/', StudentProfileManageView.as_view(), name='manage-student-profile'),
     path('profile/publisher/', PublisherProfileManageView.as_view(), name='publisher-profile'),
+    path('publisher/<str:username>/', PublicPublisherProfileView.as_view(), name='public-publisher-profile'),
 
     path('dashboard/tutor/', TutorDashboardView.as_view(), name='tutor-dashboard'),
     path('instructors/search/', SearchInstructorsView.as_view(), name='search-instructors'),

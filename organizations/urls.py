@@ -5,7 +5,7 @@ from .views import (
     OrganizationViewSet, OrgMembershipViewSet, GuardianLinkViewSet, OrgTeamViewSet,
     ActiveOrganizationView, OrganizationCreateView,
     PublicOrgLevelListView,
-    check_organization_access, OrganizationTeamView, OrgCategoryViewSet, OrgLevelViewSet
+    check_organization_access, OrganizationTeamView, OrgCategoryViewSet, OrgLevelViewSet, ValidateOrgContextView
 )
 from . import views_finance
 
@@ -23,6 +23,7 @@ urlpatterns = [
     path('create/', OrganizationCreateView.as_view(), name='org-create'),
     path('current/', ActiveOrganizationView.as_view(), name='org-current'),
     path('check-access/<slug:slug>/', check_organization_access, name="check_organization_access"),
+    path('validate-context/<slug:slug>/', ValidateOrgContextView.as_view(), name='validate-org-context'),
     path('org-team/<slug:slug>/', OrganizationTeamView.as_view(), name='org-team-public'),
     path('<slug:slug>/public-levels/', PublicOrgLevelListView.as_view(), name='org-public-levels'),
 

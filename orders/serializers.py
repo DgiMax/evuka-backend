@@ -1,5 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
+
+from books.models import Book
 from events.models import Event
 from .models import Order, OrderItem
 from payments.models import Payment
@@ -23,15 +25,29 @@ class OrderItemSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+    book = serializers.SlugRelatedField(
+        queryset=Book.objects.all(),
+        slug_field='slug',
+        required=False,
+        allow_null=True
+    )
+
     class Meta:
         model = OrderItem
-        fields = ["id", "course", "event", "price", "quantity", "item_title"]
+        fields = ["id", "course", "event", "book", "price", "quantity", "item_title"]
 
     def validate(self, data):
-        if not data.get("course") and not data.get("event"):
-            raise serializers.ValidationError("Each item must have either a course or an event.")
-        if data.get("course") and data.get("event"):
-            raise serializers.ValidationError("Each item can only have one of: course or event.")
+        course = data.get("course")
+        event = data.get("event")
+        book = data.get("book")
+
+        items_count = sum(x is not None for x in [course, event, book])
+
+        if items_count == 0:
+            raise serializers.ValidationError("Each item must link to a course, event, or book.")
+        if items_count > 1:
+            raise serializers.ValidationError("An order item can only link to one product at a time.")
+
         return data
 
     def get_item_title(self, obj):
@@ -39,7 +55,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
             return obj.course.title
         if obj.event:
             return obj.event.title
-        return None
+        if obj.book:
+            return obj.book.title
+        return "Unknown Item"
 
 
 class PaymentSerializer(serializers.ModelSerializer):

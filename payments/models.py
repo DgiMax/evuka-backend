@@ -49,3 +49,12 @@ class Refund(models.Model):
     requested_by_user = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
+
+
+def update_order_payment_status(order):
+    """
+    Standalone helper to trigger the internal order logic.
+    This resolves the 'reference not found' error in your views and utils.
+    """
+    if order:
+        order.update_payment_status()

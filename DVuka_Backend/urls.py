@@ -25,6 +25,7 @@ urlpatterns = [
     path('notifications/', include('notifications.urls')),
     path('help_center/', include('help_center.urls')),
     path('books/', include('books.urls')),
+    path('core/', include('core.urls')),
     path(
         'best-upcoming-events/',
         BestUpcomingEventView.as_view(),

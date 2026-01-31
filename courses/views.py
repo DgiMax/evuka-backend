@@ -869,7 +869,7 @@ class QuizAttemptViewSet(viewsets.ViewSet):
         })
 
 
-class CourseManagerViewSet(viewsets.GenericViewSet):
+class CourseManagerViewSet(viewsets.GenericViewSet, mixins.RetrieveModelMixin):
     queryset = Course.objects.all()
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated, IsTutorOrOrgAdmin]

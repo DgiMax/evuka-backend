@@ -1,10 +1,40 @@
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
-from courses.models import Course
+from courses.models import (
+    Course,
+    LessonProgress,
+    QuizAttempt,
+    AssignmentSubmission
+)
 from events.models import Event
 from .models import LiveClass
+from .services import CourseProgressService
 
+@receiver(post_save, sender=LessonProgress)
+@receiver(post_save, sender=QuizAttempt)
+@receiver(post_save, sender=AssignmentSubmission)
+def update_student_course_progress(sender, instance, **kwargs):
+    if sender == LessonProgress:
+        if not instance.is_completed:
+            return
+        user = instance.user
+        course = instance.lesson.module.course
+
+    elif sender == QuizAttempt:
+        if not instance.is_completed:
+            return
+        user = instance.user
+        course = instance.quiz.lesson.module.course
+
+    elif sender == AssignmentSubmission:
+        if instance.submission_status != 'graded':
+            return
+        user = instance.user
+        course = instance.assignment.module.course
+
+    progress_service = CourseProgressService(user, course)
+    progress_service.calculate_progress()
 
 @receiver(pre_save, sender=Course)
 def track_course_status_change(sender, instance, **kwargs):
@@ -16,7 +46,6 @@ def track_course_status_change(sender, instance, **kwargs):
             instance._old_status = None
     else:
         instance._old_status = None
-
 
 @receiver(post_save, sender=Course)
 def handle_course_status_cascading(sender, instance, created, **kwargs):

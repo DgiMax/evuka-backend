@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, status, generics
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from rest_framework.filters import SearchFilter
@@ -22,7 +23,6 @@ from .serializers import (
 
 User = get_user_model()
 
-
 class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.AllowAny]
     serializer_class = OrgDiscoverySerializer
@@ -33,7 +33,6 @@ class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     def get_serializer_context(self):
         return {'request': self.request}
 
-
 class RequestToJoinView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OrgJoinRequestCreateSerializer
@@ -41,30 +40,26 @@ class RequestToJoinView(generics.CreateAPIView):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
-
 class OrgJoinRequestViewSet(viewsets.ModelViewSet):
     serializer_class = OrgJoinRequestSerializer
-    permission_classes = [IsOrgStaff]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
 
         if not active_org:
             slug = self.request.headers.get("X-Organization-Slug")
             if slug:
-                try:
-                    active_org = Organization.objects.get(slug=slug)
-                    self.request.active_organization = active_org
-                except Organization.DoesNotExist:
-                    pass
+                active_org = Organization.objects.filter(slug=slug).first()
 
-        if not active_org:
+        if active_org:
+            membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
+            if membership and membership.role in ["admin", "owner"]:
+                return OrgJoinRequest.objects.filter(organization=active_org, status="pending").select_related('user')
             return OrgJoinRequest.objects.none()
 
-        return OrgJoinRequest.objects.filter(
-            organization=active_org,
-            status="pending"
-        ).select_related('user')
+        return OrgJoinRequest.objects.filter(user=user).select_related('organization')
 
     @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
     @transaction.atomic
@@ -114,36 +109,13 @@ class OrgJoinRequestViewSet(viewsets.ModelViewSet):
         req.save()
         return Response({"status": "Request rejected."})
 
-
-class OrgSentInvitationsViewSet(viewsets.ModelViewSet):
-    serializer_class = AdvancedInvitationSerializer
-    permission_classes = [IsOrgAdminOrOwner]
-
-    def get_queryset(self):
-        active_org = getattr(self.request, "active_organization", None)
-
-        if not active_org:
-            slug = self.request.headers.get("X-Organization-Slug")
-            if slug:
-                try:
-                    active_org = Organization.objects.get(slug=slug)
-                    self.request.active_organization = active_org
-                except Organization.DoesNotExist:
-                    pass
-
-        if not active_org:
-            return AdvancedOrgInvitation.objects.none()
-
-        return AdvancedOrgInvitation.objects.filter(
-            organization=active_org
-        ).order_by('-created_at')
-
-    @action(detail=True, methods=['post'])
-    def revoke(self, request, pk=None):
-        inv = self.get_object()
-        inv.delete()
-        return Response({"status": "Invitation revoked."})
-
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def cancel(self, request, pk=None):
+        req = self.get_object()
+        if req.user != request.user:
+            return Response({"error": "Not your request."}, status=403)
+        req.delete()
+        return Response({"status": "Request withdrawn."})
 
 class InvitationViewSet(viewsets.ModelViewSet):
     serializer_class = AdvancedInvitationSerializer
@@ -151,11 +123,20 @@ class InvitationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        return AdvancedOrgInvitation.objects.filter(
-            email=user.email
-        ) | AdvancedOrgInvitation.objects.filter(
-            invited_by=user
-        )
+        active_org = getattr(self.request, "active_organization", None)
+
+        if not active_org:
+            slug = self.request.headers.get("X-Organization-Slug")
+            if slug:
+                active_org = Organization.objects.filter(slug=slug).first()
+
+        if active_org:
+            membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
+            if membership and membership.role in ["admin", "owner"]:
+                return AdvancedOrgInvitation.objects.filter(organization=active_org)
+            return AdvancedOrgInvitation.objects.none()
+
+        return AdvancedOrgInvitation.objects.filter(email=user.email)
 
     def perform_create(self, serializer):
         active_org = getattr(self.request, "active_organization", None)
@@ -170,7 +151,24 @@ class InvitationViewSet(viewsets.ModelViewSet):
         if not IsOrgAdminOrOwner().has_permission(self.request, self):
             raise serializers.ValidationError({"detail": "Only admins can send invitations."})
 
+        invite_email = serializer.validated_data.get('email')
+
+        if OrgMembership.objects.filter(user__email=invite_email, organization=active_org).exists():
+            raise serializers.ValidationError({"email": "This user is already a member of the organization."})
+
+        if AdvancedOrgInvitation.objects.filter(email=invite_email, organization=active_org).exclude(
+            gov_status__in=['rejected', 'revoked'],
+            tutor_status__in=['rejected', 'revoked']
+        ).exists():
+            raise serializers.ValidationError({"email": "A pending invitation already exists for this email."})
+
         serializer.save(organization=active_org, invited_by=self.request.user)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
+    def revoke(self, request, pk=None):
+        inv = self.get_object()
+        inv.delete()
+        return Response({"status": "Invitation revoked."})
 
     @action(detail=True, methods=['post'])
     def respond(self, request, pk=None):
@@ -195,7 +193,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                         return Response({"error": "Cannot accept. Commission below 10% limit."}, status=400)
 
                     invite.tutor_status = 'accepted'
-
                     TutorAgreement.objects.update_or_create(
                         organization=invite.organization,
                         user=request.user,
@@ -205,10 +202,8 @@ class InvitationViewSet(viewsets.ModelViewSet):
                             'is_active': True
                         }
                     )
-
                 elif act == 'reject':
                     invite.tutor_status = 'rejected'
-
                 elif act == 'counter':
                     new_val = data['counter_value']
                     NegotiationLog.objects.create(
@@ -224,7 +219,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
             elif section == 'governance':
                 if act == 'accept':
                     invite.gov_status = 'accepted'
-
                     OrgMembership.objects.update_or_create(
                         organization=invite.organization,
                         user=request.user,
@@ -233,7 +227,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                             'is_active': True
                         }
                     )
-
                 elif act == 'reject':
                     invite.gov_status = 'rejected'
 

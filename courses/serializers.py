@@ -10,7 +10,7 @@ from django.db.models import Sum, Case, When
 from django.http import QueryDict
 
 from books.models import BookAccess
-from live.serializers import LiveClassStudentSerializer, LiveClassManagementSerializer
+from live.serializers import LiveClassStudentSerializer, LiveClassManagementSerializer, LiveClassMinimalSerializer
 from .models import (
     Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalSubCategory,
     LessonProgress, Quiz, Question, Option, CourseAssignment, QuizAttempt,
@@ -223,8 +223,12 @@ class CourseDetailSerializer(serializers.ModelSerializer):
     category = GlobalSubCategorySerializer(source="global_subcategory", read_only=True)
     level = GlobalLevelSerializer(source="global_level", read_only=True)
     organization_name = serializers.CharField(source="organization.name", read_only=True)
-    is_enrolled = serializers.BooleanField(read_only=True)
-    num_students = serializers.IntegerField(read_only=True)
+
+    total_duration = serializers.IntegerField(source="total_duration_minutes", read_only=True)
+    total_lessons = serializers.IntegerField(source="total_lessons_count", read_only=True)
+
+    is_enrolled = serializers.BooleanField(read_only=True, default=False)
+    num_students = serializers.IntegerField(read_only=True, default=0)
     status = serializers.CharField(read_only=True)
     live_classes = LiveClassStudentSerializer(many=True, read_only=True)
 
@@ -232,29 +236,25 @@ class CourseDetailSerializer(serializers.ModelSerializer):
         model = Course
         fields = (
             "slug", "title", "short_description", "long_description",
-            "learning_objectives", "thumbnail",
-            "promo_video",
+            "learning_objectives", "thumbnail", "promo_video",
             "instructor", "instructors", "organization_name", "category", "level",
             "price", "rating_avg", "num_students", "num_ratings",
             "is_enrolled", "modules", "status", "created_at", "updated_at",
-            "live_classes",
+            "live_classes", "total_duration", "total_lessons",
         )
 
     def get_instructors(self, obj):
         profiles = CreatorProfile.objects.filter(user__in=obj.instructors.all())
-        return InstructorSummarySerializer(profiles, many=True).data
+        return InstructorSummarySerializer(profiles, many=True, context=self.context).data
 
     def to_representation(self, instance):
-        data = super().to_representation(instance)
-
-        if 'request' in self.context and 'live_classes' in data:
-            live_classes_qs = instance.live_classes.all()
-            data['live_classes'] = LiveClassStudentSerializer(
-                live_classes_qs,
-                many=True,
-                context=self.context
-            ).data
-        return data
+        """
+        Ensures context is passed down correctly to child serializers
+        without redundant query logic.
+        """
+        self.context['course'] = instance
+        self.fields['instructor'].context.update(self.context)
+        return super().to_representation(instance)
 
 
 class QuizAttemptMinimalSerializer(serializers.ModelSerializer):
@@ -1055,7 +1055,7 @@ class CourseManagementDashboardSerializer(serializers.ModelSerializer):
     assignments_summary = serializers.SerializerMethodField()
     quizzes_summary = serializers.SerializerMethodField()
     enrollments = EnrollmentManagerSerializer(many=True, read_only=True)
-    live_classes = LiveClassManagementSerializer(many=True, read_only=True)
+    live_classes = LiveClassMinimalSerializer(many=True, read_only=True)
     global_category = serializers.SerializerMethodField()
     thumbnail = serializers.SerializerMethodField()
     instructors = serializers.SerializerMethodField()

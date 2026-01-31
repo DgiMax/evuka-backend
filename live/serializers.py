@@ -7,6 +7,17 @@ from courses.models import Course, Enrollment
 from .models import LiveClass, LiveLesson, LessonResource
 
 
+class LiveClassMinimalSerializer(serializers.ModelSerializer):
+    lessons_count = serializers.IntegerField(source='lessons.count', read_only=True)
+
+    class Meta:
+        model = LiveClass
+        fields = [
+            "id", "slug", "title", "recurrence_type",
+            "start_date", "lessons_count", "recurrence_days"
+        ]
+
+
 class LessonResourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = LessonResource
@@ -59,17 +70,19 @@ class LiveClassStudentSerializer(serializers.ModelSerializer):
 
 
 class CourseLiveHubSerializer(serializers.ModelSerializer):
+    live_classes = LiveClassMinimalSerializer(many=True, read_only=True)
     ongoing_lessons = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-        fields = ["id", "slug", "title", "thumbnail", "ongoing_lessons"]
+        fields = ["id", "slug", "title", "thumbnail", "ongoing_lessons", "live_classes"]
 
     def get_ongoing_lessons(self, obj):
         now = timezone.now()
+        buffer_time = now + timedelta(minutes=20)
         lessons = LiveLesson.objects.filter(
             live_class__course=obj,
-            start_datetime__lte=now + timedelta(minutes=20),
+            start_datetime__lte=buffer_time,
             end_datetime__gt=now,
             is_cancelled=False
         )
@@ -78,6 +91,8 @@ class CourseLiveHubSerializer(serializers.ModelSerializer):
 
 class LiveClassManagementSerializer(serializers.ModelSerializer):
     lessons_count = serializers.IntegerField(source='lessons.count', read_only=True)
+    # This line is the missing link - it attaches the actual lesson objects
+    lessons = LiveLessonSerializer(many=True, read_only=True)
 
     class Meta:
         model = LiveClass

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.conf import settings
 from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -36,23 +37,25 @@ class LiveClassManagementViewSet(viewsets.ModelViewSet):
         active_org = getattr(self.request, "active_organization", None)
         course_slug = self.request.query_params.get('course_slug')
 
-        qs = LiveClass.objects.select_related("course").prefetch_related("lessons")
-
         if active_org:
             membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
             if not membership:
-                return qs.none()
-            if membership.role in ["admin", "owner"]:
-                qs = qs.filter(organization=active_org)
+                return LiveClass.objects.none()
+
+            is_admin = membership.role in ["admin", "owner"]
+            if is_admin:
+                qs = LiveClass.objects.filter(organization=active_org)
             else:
-                qs = qs.filter(organization=active_org, creator=user)
+                qs = LiveClass.objects.filter(organization=active_org, creator=user)
         else:
-            qs = qs.filter(creator=user, organization__isnull=True)
+            qs = LiveClass.objects.filter(organization__isnull=True, creator=user)
+
+        qs = qs.filter(course__status="published")
 
         if course_slug:
             qs = qs.filter(course__slug=course_slug)
 
-        return qs
+        return qs.select_related("course").prefetch_related("lessons")
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -71,7 +74,7 @@ class LiveClassManagementViewSet(viewsets.ModelViewSet):
         scheduler.update_schedule()
 
 
-class StudentLiveHubViewSet(viewsets.ReadOnlyModelViewSet):
+class LiveHubViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CourseLiveHubSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -79,33 +82,39 @@ class StudentLiveHubViewSet(viewsets.ReadOnlyModelViewSet):
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
 
-        enrolled_course_ids = Enrollment.objects.filter(
-            user=user, status='active'
-        ).values_list('course_id', flat=True)
-
-        qs = Course.objects.filter(id__in=enrolled_course_ids).distinct()
+        base_qs = Course.objects.filter(status="published")
 
         if active_org:
-            qs = qs.filter(organization=active_org)
-        else:
-            qs = qs.filter(organization__isnull=True)
+            membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
+            if not membership:
+                return Course.objects.none()
 
-        return qs.prefetch_related('live_classes', 'live_classes__lessons')
+            is_admin = membership.role in ["admin", "owner"]
+            if is_admin:
+                courses_qs = base_qs.filter(organization=active_org)
+            else:
+                courses_qs = base_qs.filter(organization=active_org, creator=user)
+        else:
+            courses_qs = base_qs.filter(organization__isnull=True, creator=user)
+
+        return courses_qs.distinct().prefetch_related('live_classes', 'live_classes__lessons')
 
     def list(self, request, *args, **kwargs):
-        response = super().list(request, *args, **kwargs)
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
         now = timezone.now()
+        buffer_time = now + timedelta(minutes=20)
 
         live_now_count = LiveLesson.objects.filter(
-            live_class__course__id__in=self.get_queryset().values_list('id', flat=True),
-            start_datetime__lte=now + timedelta(minutes=20),
+            live_class__course__in=queryset,
+            start_datetime__lte=buffer_time,
             end_datetime__gt=now,
             is_cancelled=False
         ).distinct().count()
 
         return Response({
             "live_now_count": live_now_count,
-            "courses": response.data
+            "courses": serializer.data
         })
 
 
@@ -125,7 +134,8 @@ class LiveLessonViewSet(
         is_tutor_or_admin = IsTutorOrOrgAdmin().has_permission(self.request, self)
 
         if is_tutor_or_admin:
-            qs = LiveLesson.objects.select_related("live_class", "live_class__organization")
+            qs = LiveLesson.objects.select_related("live_class", "live_class__organization").filter(
+                live_class__course__status="published")
             if active_org:
                 membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
                 if not membership:
@@ -135,10 +145,8 @@ class LiveLessonViewSet(
                 return qs.filter(live_class__organization=active_org, live_class__creator=user)
             return qs.filter(live_class__creator=user, live_class__organization__isnull=True)
 
-        enrolled_course_ids = Enrollment.objects.filter(
-            user=user, status="active"
-        ).values_list("course_id", flat=True)
-
+        enrolled_course_ids = Enrollment.objects.filter(user=user, status="active",
+                                                        course__status="published").values_list("course_id", flat=True)
         qs = LiveLesson.objects.filter(live_class__course_id__in=enrolled_course_ids)
         if active_org:
             return qs.filter(live_class__organization=active_org)
@@ -153,14 +161,13 @@ class LiveLessonViewSet(
         if not is_host:
             now = timezone.now()
             buffer_start = lesson.start_datetime - timedelta(minutes=20)
-
             if now < buffer_start:
                 time_left = int((buffer_start - now).total_seconds() / 60)
                 return Response({
                     "error": "too_early",
                     "message": f"Class opens in {time_left} minutes",
                     "open_at": buffer_start
-                }, status=403)
+                }, status=status.HTTP_403_FORBIDDEN)
 
         participant_identity = str(user.id)
         participant_name = user.get_full_name() or user.username
@@ -185,27 +192,24 @@ class LiveLessonViewSet(
             can_publish_data=True,
         ))
 
-        resources = lesson.resources.all()
-        resource_data = LessonResourceSerializer(resources, many=True).data
-
         return Response({
             "token": token.to_jwt(),
             "url": LK_SERVER_URL,
             "is_host": is_host,
             "host_identity": host_identity,
             "effective_end_datetime": lesson.effective_end_datetime,
-            "resources": resource_data
+            "resources": LessonResourceSerializer(lesson.resources.all(), many=True).data
         })
 
     @action(detail=True, methods=["post"])
     def extend_time(self, request, pk=None):
         lesson = self.get_object()
         if request.user != lesson.live_class.creator:
-            return Response({"error": "Unauthorized"}, status=403)
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         add_minutes = int(request.data.get("minutes", 15))
         if lesson.extension_minutes + add_minutes > 60:
-            return Response({"error": "Limit reached"}, status=400)
+            return Response({"error": "Limit reached"}, status=status.HTTP_400_BAD_REQUEST)
 
         lesson.extension_minutes += add_minutes
         lesson.save()
@@ -215,36 +219,32 @@ class LiveLessonViewSet(
     def toggle_lock(self, request, pk=None):
         lesson = self.get_object()
         if request.user != lesson.live_class.creator:
-            return Response({"error": "Unauthorized"}, status=403)
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
-        target = request.data.get("target")
-        state = request.data.get("locked")
-
+        target, state = request.data.get("target"), request.data.get("locked")
         if target == 'mic':
             lesson.is_mic_locked = state
         elif target == 'camera':
             lesson.is_camera_locked = state
         lesson.save()
 
-        lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
-        room_meta = json.dumps({"mic_locked": lesson.is_mic_locked, "camera_locked": lesson.is_camera_locked})
-
         try:
-            lkapi.room.update_room_metadata(lesson.chat_room_id, metadata=room_meta)
+            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+            lkapi.room.update_room_metadata(lesson.chat_room_id, metadata=json.dumps({
+                "mic_locked": lesson.is_mic_locked, "camera_locked": lesson.is_camera_locked
+            }))
         except:
             pass
-
         return Response({"status": "updated"})
 
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def upload_resource(self, request, pk=None):
         lesson = self.get_object()
         if request.user != lesson.live_class.creator:
-            return Response({"error": "Unauthorized"}, status=403)
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
-        if not file: return Response({"error": "No file"}, status=400)
-
+        if not file: return Response({"error": "No file"}, status=status.HTTP_400_BAD_REQUEST)
         resource = LessonResource.objects.create(lesson=lesson, file=file, title=request.data.get('title', file.name))
         return Response(LessonResourceSerializer(resource).data)
 
@@ -252,7 +252,7 @@ class LiveLessonViewSet(
     def cancel(self, request, pk=None):
         lesson = self.get_object()
         if request.user != lesson.live_class.creator:
-            return Response({"error": "Unauthorized"}, status=403)
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
         lesson.is_cancelled = True
         lesson.save()
         return Response({"status": "cancelled"})

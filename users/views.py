@@ -27,10 +27,12 @@ from datetime import timedelta
 from courses.models import Course, Enrollment, LessonProgress
 from events.models import Event
 from live.models import LiveLesson
+from courses.services import CourseProgressService
+from books.models import BookAccess
 from organizations.models import OrgMembership, Organization
 from payments.services.paystack_payout import create_transfer_recipient
 from revenue.models import Payout, Transaction, Wallet
-from .models import CreatorProfile, StudentProfile, NewsletterSubscriber, BankingDetails
+from .models import CreatorProfile, StudentProfile, NewsletterSubscriber, BankingDetails, PublisherProfile
 from .permissions import IsTutor
 from .serializers import (
     RegisterSerializer,
@@ -46,6 +48,7 @@ from .serializers import (
     PayoutSerializer, CreatorProfilePublicSerializer, StudentProfileReadSerializer, NewsletterSubscriberSerializer,
     GoogleLoginSerializer, UserDetailSerializer, PublicTutorProfileSerializer, BankingDetailsInputSerializer,
     BankingDetailsViewSerializer, InstructorSearchSerializer, CourseAnalyticsSerializer, EventAnalyticsSerializer,
+    PublicPublisherProfileSerializer,
 )
 from users.serializers import WebSocketTokenSerializer
 
@@ -428,9 +431,12 @@ class CurrentUserView(APIView):
 
         org_data = []
         for membership in memberships:
+            org = membership.organization
             org_data.append({
-                "organization_name": membership.organization.name,
-                "organization_slug": membership.organization.slug,
+                "organization_name": org.name,
+                "organization_slug": org.slug,
+                "organization_status": org.status,
+                "is_published": org.status == 'published',
                 "role": membership.role,
                 "is_active": membership.is_active,
             })
@@ -470,7 +476,7 @@ def calculate_course_progress(course, user):
     return round((completed_lessons / total_lessons) * 100) if total_lessons > 0 else 0
 
 
-class DashboardAPIView(APIView):
+class StudentDashboardAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
@@ -479,142 +485,119 @@ class DashboardAPIView(APIView):
         now = timezone.now()
 
         active_org = None
-        org_level_id = None
-        display_name = user.get_full_name() or user.username
-        context_type = "personal"
+        if active_slug:
+            active_org = Organization.objects.filter(
+                slug=active_slug,
+                memberships__user=user,
+                memberships__is_active=True
+            ).first()
 
-        # 1. Determine Context (Personal vs Organization)
-        try:
-            if active_slug:
-                active_org = Organization.objects.get(slug=active_slug)
-                membership = OrgMembership.objects.get(
-                    user=user,
-                    organization=active_org,
-                    is_active=True
-                )
-                org_level_id = membership.level_id
-                display_name = active_org.name
-                context_type = "organization"
-        except (Organization.DoesNotExist, OrgMembership.DoesNotExist):
-            active_org = None
-            org_level_id = None
+        context_query = Q(organization=active_org) if active_org else Q(organization__isnull=True)
 
-        # 2. Base Course Query
-        course_qs = Course.objects.filter(
+        enrolled_courses = Course.objects.filter(
             enrollments__user=user,
             enrollments__status='active',
             status='published'
-        ).select_related('organization', 'org_level', 'creator').prefetch_related('modules__lessons')
+        ).filter(context_query).distinct()
 
-        # Apply Context Filters
-        if context_type == "organization":
-            course_qs = course_qs.filter(organization=active_org)
-            if org_level_id:
-                course_qs = course_qs.filter(org_level_id=org_level_id)
-        else:
-            course_qs = course_qs.filter(organization__isnull=True)
-
-        # 3. ADVANCED PROGRESS CALCULATION (Annotations)
-        # This replaces the slow loop with a single efficient database query
-        enrolled_courses = course_qs.annotate(
-            # --- Denominator (Totals) ---
-            total_lessons=Count('modules__lessons', distinct=True),
-            total_assignments=Count('modules__assignments', distinct=True),
-            total_quizzes=Count('modules__lessons__quizzes', distinct=True),
-
-            # --- Numerator (Completed) ---
-            completed_lessons=Count(
-                'modules__lessons__progress_records',
-                filter=Q(
-                    modules__lessons__progress_records__user=user,
-                    modules__lessons__progress_records__is_completed=True
-                ),
-                distinct=True
-            ),
-            completed_assignments=Count(
-                'modules__assignments__submissions',
-                filter=Q(modules__assignments__submissions__user=user),
-                distinct=True
-            ),
-            completed_quizzes=Count(
-                'modules__lessons__quizzes__attempts',
-                filter=Q(
-                    modules__lessons__quizzes__attempts__user=user,
-                    modules__lessons__quizzes__attempts__is_completed=True
-                ),
-                distinct=True
-            )
-        )
-
-        # 4. Calculate Percentage in Python (Fast in-memory math)
-        progress_map = {}
+        course_data = []
         for course in enrolled_courses:
-            # Weighted total matches your CourseProgressService logic
-            weighted_total = course.total_lessons + course.total_assignments + course.total_quizzes
-            weighted_completed = course.completed_lessons + course.completed_assignments + course.completed_quizzes
+            service = CourseProgressService(user, course)
+            progress = service.calculate_progress()
+            course_data.append({
+                "id": course.id,
+                "title": course.title,
+                "slug": course.slug,
+                "thumbnail": request.build_absolute_uri(course.thumbnail.url) if course.thumbnail else None,
+                "progress": progress['percent'],
+                "is_completed": progress['is_completed'],
+                "next_lesson": self._get_next_lesson(user, course)
+            })
 
-            if weighted_total > 0:
-                percent = round((weighted_completed / weighted_total) * 100)
-                percent = min(percent, 100)  # Cap at 100%
-            else:
-                percent = 0
+        upcoming_live = LiveLesson.objects.filter(
+            live_class__course__in=enrolled_courses,
+            start_datetime__gte=now - timedelta(minutes=20),
+            start_datetime__lte=now + timedelta(days=7),
+            is_cancelled=False
+        ).select_related('live_class', 'live_class__course').order_by('start_datetime')
 
-            progress_map[course.id] = percent
-
-        # 5. Fetch Events
-        event_qs = Event.objects.filter(
+        upcoming_events = Event.objects.filter(
             registrations__user=user,
             registrations__status='registered',
             start_time__gte=now,
             event_status__in=['approved', 'scheduled']
-        ).select_related('course')
+        ).filter(course__in=enrolled_courses).order_by('start_time')[:5]
 
-        if context_type == "organization":
-            event_qs = event_qs.filter(course__organization=active_org)
-        else:
-            event_qs = event_qs.filter(course__organization__isnull=True)
+        my_books = BookAccess.objects.filter(user=user).select_related('book').order_by('-granted_at')[:4]
 
-        registered_events = list(event_qs.order_by('start_time')[:6])
+        my_orgs = OrgMembership.objects.filter(
+            user=user, role='student', is_active=True
+        ).select_related('organization')
 
-        # 6. Fetch Student Organizations (New feature for Personal Dashboard)
-        student_organizations = []
-        if context_type == "personal":
-            # Only fetch orgs where the user is a STUDENT
-            org_memberships = OrgMembership.objects.filter(
-                user=user,
-                role='student',
-                is_active=True
-            ).select_related('organization', 'level')
+        return Response({
+            "greeting": f"Hello, {user.first_name or user.username}",
+            "context": {
+                "type": "organization" if active_org else "personal",
+                "label": active_org.name if active_org else "Personal Workspace",
+                "org_slug": active_slug
+            },
+            "live_now": self._serialize_live_sessions(upcoming_live, now),
+            "courses": course_data,
+            "events": self._serialize_events(upcoming_events, request),
+            "library": self._serialize_books(my_books, request),
+            "organizations": self._serialize_orgs(my_orgs, request),
+        })
 
-            # Use the new serializer we created
-            student_organizations = StudentDashboardOrgSerializer(
-                org_memberships,
-                many=True,
-                context={'request': request}
-            ).data
+    def _get_next_lesson(self, user, course):
+        completed_ids = user.lesson_progress.filter(
+            lesson__module__course=course,
+            is_completed=True
+        ).values_list('lesson_id', flat=True)
 
-        # 7. Serialize Data
-        course_serializer = DashboardCourseSerializer(
-            enrolled_courses,
-            many=True,
-            context={'request': request, 'progress_map': progress_map}
-        )
+        next_lesson = course.modules.prefetch_related('lessons').order_by('order').values(
+            'lessons__title', 'lessons__id'
+        ).exclude(lessons__id__in=completed_ids).first()
 
-        event_serializer = DashboardEventSerializer(
-            registered_events,
-            many=True,
-            context={'request': request}
-        )
+        return next_lesson['lessons__title'] if next_lesson else "Course Completed"
 
-        data = {
-            'context_type': context_type,
-            'display_name': display_name,
-            'enrolled_courses': course_serializer.data,
-            'registered_events': event_serializer.data,
-            'my_organizations': student_organizations,  # Added here
-        }
+    def _serialize_live_sessions(self, queryset, now):
+        data = []
+        for session in queryset:
+            is_live = session.start_datetime <= now <= session.effective_end_datetime
+            data.append({
+                "id": session.id,
+                "title": session.title,
+                "course": session.live_class.course.title,
+                "start": session.start_datetime,
+                "is_live": is_live,
+                "room_id": session.chat_room_id if is_live else None
+            })
+        return data
 
-        return Response(data, status=status.HTTP_200_OK)
+    def _serialize_events(self, queryset, request):
+        return [{
+            "title": e.title,
+            "slug": e.slug,
+            "start": e.start_time,
+            "type": e.event_type,
+            "banner": request.build_absolute_uri(e.banner_image.url) if e.banner_image else None
+        } for e in queryset]
+
+    def _serialize_books(self, queryset, request):
+        return [{
+            "title": a.book.title,
+            "slug": a.book.slug,
+            "cover": request.build_absolute_uri(a.book.cover_image.url) if a.book.cover_image else None,
+            "author": a.book.authors
+        } for a in queryset]
+
+    def _serialize_orgs(self, queryset, request):
+        return [{
+            "name": m.organization.name,
+            "slug": m.organization.slug,
+            "logo": request.build_absolute_uri(m.organization.logo.url) if m.organization.logo else None,
+            "level": m.level.name if m.level else None
+        } for m in queryset]
 
 
 class StudentProfileManageView(generics.RetrieveUpdateAPIView, generics.CreateAPIView):
@@ -1000,6 +983,31 @@ class PublicTutorProfileView(generics.RetrieveAPIView):
         username = self.kwargs.get(self.lookup_url_kwarg)
 
         # Ensure we are looking up by the related User's username
+        obj = get_object_or_404(queryset, user__username=username)
+
+        self.check_object_permissions(self.request, obj)
+        return obj
+
+
+class PublicPublisherProfileView(generics.RetrieveAPIView):
+    """
+    Public endpoint to retrieve a publisher's profile details by their username.
+    Endpoint: GET /users/publisher/<username>/
+    """
+    permission_classes = [permissions.AllowAny]
+    serializer_class = PublicPublisherProfileSerializer
+    lookup_field = 'user__username'
+    lookup_url_kwarg = 'username'
+
+    def get_queryset(self):
+        return PublisherProfile.objects.select_related('user').prefetch_related(
+            'books__categories'
+        )
+
+    def get_object(self):
+        queryset = self.filter_queryset(self.get_queryset())
+        username = self.kwargs.get(self.lookup_url_kwarg)
+
         obj = get_object_or_404(queryset, user__username=username)
 
         self.check_object_permissions(self.request, obj)

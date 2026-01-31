@@ -1,7 +1,7 @@
-from django.db.models import Count, Q
+from django.db import transaction
+from django.db.models import Avg, Count
 from django.utils import timezone
-from .models import Enrollment, Lesson, CourseAssignment, Quiz, Certificate
-from live.models import LiveLesson, LiveClass
+from .models import Enrollment, Lesson, CourseAssignment, Quiz, Certificate, LessonProgress
 
 
 class CourseProgressService:
@@ -10,98 +10,69 @@ class CourseProgressService:
         self.course = course
 
     def calculate_progress(self):
-        """
-        Aggregates all course content and calculates a percentage.
-        Returns: { 'percent': float, 'detail': dict, 'is_completed': bool }
-        """
-
-        # --- 1. GET TOTALS (The Denominator) ---
-
-        # Standard Lessons
-        total_lessons = Lesson.objects.filter(module__course=self.course).count()
-
-        # Assignments
-        total_assignments = CourseAssignment.objects.filter(module__course=self.course).count()
-
-        # Quizzes (attached to lessons in this course)
-        total_quizzes = Quiz.objects.filter(lesson__module__course=self.course).count()
-
-        # Live Lessons (Only count ones that have actually happened or are active)
-        # We don't want to penalize students for future lessons that haven't happened yet.
-        total_live_lessons = LiveLesson.objects.filter(
-            live_class__course=self.course,
-            date__lte=timezone.now().date()
-        ).count()
-
-        total_items = total_lessons + total_assignments + total_quizzes + total_live_lessons
-
-        if total_items == 0:
-            return {"percent": 0, "is_completed": False}
-
-        # --- 2. GET COMPLETED (The Numerator) ---
-
-        # Completed Lessons (from LessonProgress)
-        completed_lessons = self.user.lesson_progress.filter(
-            lesson__module__course=self.course,
+        lessons_qs = Lesson.objects.filter(module__course=self.course)
+        total_lessons = lessons_qs.count()
+        completed_lessons = LessonProgress.objects.filter(
+            user=self.user,
+            lesson__in=lessons_qs,
             is_completed=True
         ).count()
 
-        # Completed Assignments (Submitted)
-        # Optional: Add filter(submission_status='graded') if you want strict grading
+        assignments_qs = CourseAssignment.objects.filter(module__course=self.course)
+        total_assignments = assignments_qs.count()
         completed_assignments = self.user.assignment_submissions.filter(
-            assignment__module__course=self.course
+            assignment__in=assignments_qs,
+            submission_status='graded'
         ).count()
 
-        # Completed Quizzes (Passed or Attempted)
-        # Here we assume 'is_completed' means they finished the attempt.
-        # You could add score checks here (e.g., attempt__score__gte=50)
+        quizzes_qs = Quiz.objects.filter(lesson__module__course=self.course)
+        total_quizzes = quizzes_qs.count()
         completed_quizzes = Quiz.objects.filter(
-            lesson__module__course=self.course,
+            id__in=quizzes_qs,
             attempts__user=self.user,
             attempts__is_completed=True
         ).distinct().count()
 
-        # Live Lessons "Attended"
-        # Since we don't have strict attendance logs yet, we can use a heuristic:
-        # If the student clicked "Join" (we can track this) or we just assume
-        # simple progress for now. Ideally, you add an 'Attendance' model.
-        # For this version, let's assume if it's in the past, they get credit
-        # (Participation grade) OR we just track 0 for now until you add attendance.
-        # Let's count Jitsi tokens generated as 'attendance' if you log them,
-        # otherwise we might exclude Live Classes from the *Certificate* calculation
-        # to be fair, or auto-complete them.
+        total_items = total_lessons + total_assignments + total_quizzes
+        completed_items = completed_lessons + completed_assignments + completed_quizzes
 
-        # STRATEGY: Exclude Live Lessons from "Hard" Progress for now to avoid blocking certificates
-        # unless you manually mark attendance.
-        # We will modify the denominator to exclude live lessons for the certificate math.
+        if total_items == 0:
+            return {"percent": 0, "is_completed": False}
 
-        weighted_total = total_lessons + total_assignments + total_quizzes
-        weighted_completed = completed_lessons + completed_assignments + completed_quizzes
+        percent = (completed_items / total_items) * 100
+        is_completed = (completed_lessons == total_lessons and
+                        completed_assignments == total_assignments and
+                        completed_quizzes == total_quizzes)
 
-        if weighted_total == 0:
-            percent = 0
-        else:
-            percent = (weighted_completed / weighted_total) * 100
-
-        # --- 3. CHECK CERTIFICATE ---
-        is_completed = percent >= 100
-
-        # Auto-Generate Certificate if 100%
         if is_completed:
-            self._issue_certificate()
+            self._handle_completion()
 
         return {
             "percent": round(percent, 2),
+            "is_completed": is_completed,
             "breakdown": {
-                "lessons": f"{completed_lessons}/{total_lessons}",
-                "assignments": f"{completed_assignments}/{total_assignments}",
-                "quizzes": f"{completed_quizzes}/{total_quizzes}",
-            },
-            "is_completed": is_completed
+                "lessons": {"total": total_lessons, "completed": completed_lessons},
+                "assignments": {"total": total_assignments, "completed": completed_assignments},
+                "quizzes": {"total": total_quizzes, "completed": completed_quizzes}
+            }
         }
 
+    def _handle_completion(self):
+        with transaction.atomic():
+            enrollment = Enrollment.objects.filter(
+                user=self.user,
+                course=self.course,
+                status='active'
+            ).first()
+
+            if enrollment:
+                enrollment.status = 'completed'
+                enrollment.is_completed = True
+                enrollment.save()
+
+                self._issue_certificate()
+
     def _issue_certificate(self):
-        """Idempotent certificate generation"""
         Certificate.objects.get_or_create(
             user=self.user,
             course=self.course

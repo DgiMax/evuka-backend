@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 
     'users',
+    'core',
     'organizations',
     'courses',
     'payments',
@@ -219,6 +220,8 @@ LOGGING = {
         },
     },
 }
+
+FRONTEND_URL = 'http://127.0.0.1:3000'
 
 EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND")
 EMAIL_HOST = os.environ.get("EMAIL_HOST")

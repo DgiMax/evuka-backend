@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from rest_framework import serializers
 from django.utils import timezone
 from courses.models import Course
@@ -69,11 +71,44 @@ class SimpleCourseSerializer(serializers.ModelSerializer):
         return None
 
 
-class EventListSerializer(serializers.ModelSerializer):
-    organizer_name = serializers.CharField(source="organizer.get_full_name", read_only=True)
+class EventMixin:
+    def get_banner_image(self, obj):
+        if obj.banner_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.banner_image.url)
+            return obj.banner_image.url
+        return None
+
+    def get_is_registered(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return False
+        return obj.registrations.filter(
+            user=request.user,
+            status__in=["registered", "attended"]
+        ).exists()
+
+    def get_is_full(self, obj):
+        return obj.is_full()
+
+    def get_organizer_name(self, obj):
+        if obj.course and obj.course.creator_profile:
+            return obj.course.creator_profile.display_name
+
+        if obj.organizer:
+            return obj.organizer.get_full_name() or obj.organizer.username
+
+        return "Organizer"
+
+
+class EventListSerializer(EventMixin, serializers.ModelSerializer):
+    organizer_name = serializers.SerializerMethodField()
     course_title = serializers.CharField(source="course.title", read_only=True)
     computed_status = serializers.CharField(read_only=True)
     banner_image = serializers.SerializerMethodField()
+    is_registered = serializers.SerializerMethodField()
+    is_full = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -88,27 +123,22 @@ class EventListSerializer(serializers.ModelSerializer):
             "event_type",
             "price",
             "currency",
-            "is_paid"
+            "is_paid",
+            "is_registered",
+            "is_full",
+            "location"
         ]
 
-    def get_banner_image(self, obj):
-        if obj.banner_image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.banner_image.url)
-            return obj.banner_image.url
-        return None
 
-
-class EventSerializer(serializers.ModelSerializer):
+class EventSerializer(EventMixin, serializers.ModelSerializer):
     attachments = EventAttachmentSerializer(many=True, read_only=True)
     agenda = EventAgendaSerializer(many=True, read_only=True)
     learning_objectives = EventLearningObjectiveSerializer(many=True, read_only=True)
     rules = EventRuleSerializer(many=True, read_only=True)
     registrations_count = serializers.IntegerField(source="registrations.count", read_only=True)
-    organizer_name = serializers.CharField(source="organizer.get_username", read_only=True)
+    organizer_name = serializers.SerializerMethodField()
     course = SimpleCourseSerializer(read_only=True)
-    is_full = serializers.BooleanField(read_only=True)
+    is_full = serializers.SerializerMethodField()
     is_registered = serializers.SerializerMethodField()
     has_ticket = serializers.SerializerMethodField()
     computed_status = serializers.CharField(read_only=True)
@@ -155,43 +185,19 @@ class EventSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["organizer", "slug", "created_at", "updated_at"]
 
-    def get_banner_image(self, obj):
-        if obj.banner_image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.banner_image.url)
-            return obj.banner_image.url
-        return None
-
     def get_meeting_link(self, obj):
-        return None
-
-    def get_is_registered(self, obj):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
-            return False
-        return EventRegistration.objects.filter(
-            event=obj, user=request.user, status="registered"
-        ).exists()
+            return None
+        if obj.organizer == request.user or self.get_is_registered(obj):
+            return obj.meeting_link
+        return None
 
     def get_has_ticket(self, obj):
-        request = self.context.get("request")
-        if not request or not request.user.is_authenticated:
-            return False
         if obj.event_type == 'online':
             return False
+        return self.get_is_registered(obj)
 
-        return EventRegistration.objects.filter(
-            event=obj, user=request.user, status="registered"
-        ).exists()
-
-
-import json
-from rest_framework import serializers
-from django.utils import timezone
-from .models import Event, EventLearningObjective, EventAgenda, EventRule
-from courses.models import Course
-from .serializers import EventSerializer, EventLearningObjectiveSerializer, EventAgendaSerializer, EventRuleSerializer
 
 class CreateEventSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(
@@ -428,6 +434,8 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
 
 class FeaturedEventSerializer(serializers.ModelSerializer):
     banner_image = serializers.SerializerMethodField()
+    join_details = serializers.SerializerMethodField()
+    ticket_details = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -442,6 +450,8 @@ class FeaturedEventSerializer(serializers.ModelSerializer):
             "is_paid",
             "price",
             "currency",
+            "ticket_details",
+            'join_details',
         ]
 
     def get_banner_image(self, obj):
@@ -451,3 +461,44 @@ class FeaturedEventSerializer(serializers.ModelSerializer):
                 return request.build_absolute_uri(obj.banner_image.url)
             return obj.banner_image.url
         return None
+
+    def get_ticket_details(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+
+        registration = EventRegistration.objects.filter(
+            event=obj, user=request.user, status="registered"
+        ).first()
+
+        if registration:
+            return {
+                "ticket_id": registration.ticket_id,
+                "qr_code": request.build_absolute_uri(registration.ticket_qr_code.url) if registration.ticket_qr_code else None,
+                "registered_at": registration.registered_at,
+                "status": registration.status
+            }
+        return None
+
+    def get_join_details(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+
+        is_registered = EventRegistration.objects.filter(
+            event=obj, user=request.user, status="registered"
+        ).exists()
+
+        if not is_registered and obj.organizer != request.user:
+            return None
+
+        now = timezone.now()
+        activation_time = obj.start_time - timedelta(hours=1)
+        is_active = now >= activation_time
+
+        return {
+            "is_active": is_active,
+            "activation_time": activation_time,
+            "meeting_link": obj.meeting_link if (is_active and obj.meeting_link) else None,
+            "is_external": bool(obj.meeting_link)
+        }

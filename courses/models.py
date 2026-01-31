@@ -93,6 +93,17 @@ class CourseQuerySet(models.QuerySet):
         )
 
 
+class CourseManager(models.Manager):
+    def get_queryset(self):
+        return CourseQuerySet(self.model, using=self._db)
+
+    def published(self):
+        return self.get_queryset().published()
+
+    def annotate_popularity(self):
+        return self.get_queryset().annotate_popularity()
+
+
 class Course(models.Model):
     COURSE_TYPE_CHOICES = [
         ("organization", "Organization"),
@@ -192,18 +203,31 @@ class Course(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = CourseManager()
+
     class Meta:
         ordering = ["title"]
 
     def __str__(self):
         return f"{self.title} ({self.status})"
 
+    @property
+    def total_duration_minutes(self):
+        return self.modules.aggregate(
+            total=models.Sum('lessons__estimated_duration_minutes')
+        )['total'] or 0
+
+    @property
+    def total_lessons_count(self):
+        return self.modules.aggregate(
+            total=models.Count('lessons')
+        )['total'] or 0
+
     def save(self, *args, **kwargs):
         if not self.slug:
             base_slug = slugify(self.title)
             slug = base_slug
             counter = 1
-            # Ensure unique slug if needed
             while Course.objects.filter(slug=slug).exclude(pk=self.pk).exists():
                 slug = f"{base_slug}-{counter}"
                 counter += 1
@@ -236,6 +260,7 @@ class Course(models.Model):
     def archive(self):
         self.status = "archived"
         self.save()
+
 
 class CourseNote(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="course_notes")

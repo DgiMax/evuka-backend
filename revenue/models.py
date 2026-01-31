@@ -5,6 +5,14 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+import uuid
+from decimal import Decimal
+from django.db import models, transaction
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
+
 
 class Wallet(models.Model):
     owner_user = models.OneToOneField(
@@ -35,7 +43,7 @@ class Wallet(models.Model):
     def get_system_wallet(cls):
         return cls.objects.get(owner_org__name="Evuka Platform")
 
-    def deposit(self, amount, description, tx_type="credit"):
+    def deposit(self, amount, description, tx_type="credit", source_item=None):
         with transaction.atomic():
             locked_wallet = Wallet.objects.select_for_update().get(pk=self.pk)
             locked_wallet.balance += Decimal(str(amount))
@@ -46,7 +54,8 @@ class Wallet(models.Model):
                 tx_type=tx_type,
                 amount=amount,
                 description=description,
-                balance_after=locked_wallet.balance
+                balance_after=locked_wallet.balance,
+                content_object=source_item
             )
 
     def withdraw(self, amount, description, tx_type="debit"):
@@ -82,6 +91,11 @@ class Transaction(models.Model):
     description = models.CharField(max_length=255)
     balance_after = models.DecimalField(max_digits=12, decimal_places=2)
     reference = models.CharField(max_length=100, default=uuid.uuid4)
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    content_object = GenericForeignKey('content_type', 'object_id')
+
     created_at = models.DateTimeField(auto_now_add=True)
 
 
