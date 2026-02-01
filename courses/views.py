@@ -191,9 +191,14 @@ class CourseViewSet(
         url_path="learn",
     )
     def learn(self, request, slug=None):
-        """Students can learn enrolled courses."""
-        course = self.get_object()
-        serializer = self.get_serializer(course)
+        queryset = self.get_queryset().prefetch_related(
+            'modules__lessons__resources__course_book__book',
+            'modules__lessons__quizzes__attempts',
+            'modules__assignments__submissions',
+            'live_classes__lessons'
+        )
+        course = get_object_or_404(queryset, slug=slug)
+        serializer = CourseLearningSerializer(course, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated], url_path="progress-report")

@@ -445,7 +445,9 @@ class DashboardCourseMinimalSerializer(serializers.ModelSerializer):
 
 class DashboardEventMinimalSerializer(serializers.ModelSerializer):
     start_time = serializers.DateTimeField(format="%Y-%m-%d %H:%M")
+    attendee_count = serializers.IntegerField(read_only=True)
     banner_image = serializers.SerializerMethodField()
+    revenue = serializers.FloatField(read_only=True)
 
     class Meta:
         model = Event
@@ -455,7 +457,9 @@ class DashboardEventMinimalSerializer(serializers.ModelSerializer):
             "slug",
             "start_time",
             "banner_image",
-            "event_type"
+            "event_type",
+            'attendee_count',
+            'revenue'
         ]
 
     def get_banner_image(self, obj):
@@ -791,5 +795,7 @@ class CourseAnalyticsSerializer(serializers.ModelSerializer):
             "total": float(obj.enrollments.count() * (obj.price or 0)),
             "price": float(obj.price or 0)
         }
+
+
 
 

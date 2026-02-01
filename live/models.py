@@ -91,6 +91,12 @@ class LiveLesson(models.Model):
     is_cancelled = models.BooleanField(default=False)
     extension_minutes = models.PositiveIntegerField(default=0)
 
+    attendees = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="attended_live_lessons",
+        blank=True
+    )
+
     is_mic_locked = models.BooleanField(default=False)
     is_camera_locked = models.BooleanField(default=False)
 

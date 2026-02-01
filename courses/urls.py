@@ -10,8 +10,8 @@ from .views import (
 
 router = DefaultRouter()
 
-router.register(r"courses", CourseViewSet, basename="courses")
 router.register(r'lessons', LessonViewSet, basename='lesson')
+router.register(r"courses", CourseViewSet, basename="courses")
 router.register(r'quizzes', QuizAttemptViewSet, basename='quiz')
 router.register(r"assignments", AssignmentSubmissionViewSet, basename="assignments")
 router.register(r'course-notes', CourseNoteViewSet, basename='course-notes')

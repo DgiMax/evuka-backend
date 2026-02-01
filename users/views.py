@@ -1,56 +1,76 @@
+from datetime import timedelta
+from decimal import Decimal
+
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.db import transaction
+from django.db.models import Avg, Case, Count, DecimalField, Exists, F, OuterRef, Q, Sum, Value, When
+from django.db.models.functions import Coalesce, TruncMonth
 from django.shortcuts import get_object_or_404
+from django.template.loader import render_to_string
+from django.utils import timezone
+from django.utils.html import strip_tags
 from django.utils.text import slugify
-from django.db.models.functions import TruncMonth
-from django.conf import settings
-from rest_framework import generics, status, permissions
-from rest_framework.parsers import MultiPartParser, FormParser
+
+from rest_framework import generics, mixins, permissions, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
-from rest_framework_simplejwt.views import TokenRefreshView
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
-from rest_framework import viewsets, mixins, permissions
-from rest_framework.decorators import action
-from django.db.models import Count, Sum, Q, Case, When, DecimalField, Avg
-from django.db.models.functions import Coalesce
-from django.utils import timezone
-from django.template.loader import render_to_string
-from django.utils.html import strip_tags
-from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-from datetime import timedelta
 
-from courses.models import Course, Enrollment, LessonProgress
-from events.models import Event
-from live.models import LiveLesson
-from courses.services import CourseProgressService
 from books.models import BookAccess
-from organizations.models import OrgMembership, Organization
+from courses.models import Course, Enrollment, LessonProgress
+from events.models import Event, EventRegistration
+from live.models import LiveLesson
+from organizations.models import Organization, OrgMembership
+from revenue.models import Wallet
+from .models import (
+    BankingDetails,
+    CreatorProfile,
+    NewsletterSubscriber,
+    PublisherProfile,
+    StudentProfile
+)
+
+from courses.services import CourseProgressService
 from payments.services.paystack_payout import create_transfer_recipient
-from revenue.models import Payout, Transaction, Wallet
-from .models import CreatorProfile, StudentProfile, NewsletterSubscriber, BankingDetails, PublisherProfile
 from .permissions import IsTutor
+
 from .serializers import (
     RegisterSerializer,
     VerifyEmailSerializer,
     LoginSerializer,
     ForgotPasswordSerializer,
-    StudentDashboardOrgSerializer,
     ResetPasswordSerializer,
-    ChangePasswordSerializer, DashboardEventSerializer, DashboardCourseSerializer,
+    ChangePasswordSerializer,
     StudentProfileSerializer,
-    CreatorProfileSerializer, DashboardLiveLessonSerializer, DashboardEventMinimalSerializer,
-    DashboardCourseMinimalSerializer, WalletSerializer, TransactionSerializer,
-    PayoutSerializer, CreatorProfilePublicSerializer, StudentProfileReadSerializer, NewsletterSubscriberSerializer,
-    GoogleLoginSerializer, UserDetailSerializer, PublicTutorProfileSerializer, BankingDetailsInputSerializer,
-    BankingDetailsViewSerializer, InstructorSearchSerializer, CourseAnalyticsSerializer, EventAnalyticsSerializer,
+    CreatorProfileSerializer,
+    DashboardLiveLessonSerializer,
+    DashboardEventMinimalSerializer,
+    DashboardCourseMinimalSerializer,
+    CreatorProfilePublicSerializer,
+    StudentProfileReadSerializer,
+    NewsletterSubscriberSerializer,
+    GoogleLoginSerializer,
+    UserDetailSerializer,
+    PublicTutorProfileSerializer,
+    BankingDetailsInputSerializer,
+    BankingDetailsViewSerializer,
+    InstructorSearchSerializer,
+    CourseAnalyticsSerializer,
+    EventAnalyticsSerializer,
     PublicPublisherProfileSerializer,
+    WebSocketTokenSerializer
 )
-from users.serializers import WebSocketTokenSerializer
 
 User = get_user_model()
 signer = TimestampSigner()
@@ -696,23 +716,65 @@ class TutorDashboardView(APIView):
         active_org = getattr(request, "active_organization", None)
         now = timezone.now()
 
+        COMMISSION_RATE = Decimal('0.10')
+        NET_PERCENTAGE = Decimal('1.00') - COMMISSION_RATE
+
         if active_org:
-            membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
+            membership = OrgMembership.objects.filter(user=user, organization=active_org, is_active=True).first()
             if not membership:
-                return Response({"error": "Unauthorized context"}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"error": "Unauthorized context"}, status=403)
 
             is_admin = membership.role in ["admin", "owner"]
+
             if is_admin:
+                wallet, _ = Wallet.objects.get_or_create(owner_org=active_org)
                 courses_qs = Course.objects.filter(organization=active_org)
                 events_qs = Event.objects.filter(course__organization=active_org)
+                memberships_qs = OrgMembership.objects.filter(organization=active_org, payment_status='paid')
             else:
+                wallet, _ = Wallet.objects.get_or_create(owner_user=user)
                 courses_qs = Course.objects.filter(organization=active_org, creator=user)
-                events_qs = Event.objects.filter(course__organization=active_org, organizer=user)
+                events_qs = Event.objects.filter(organizer=user)
+                memberships_qs = OrgMembership.objects.none()
         else:
+            wallet, _ = Wallet.objects.get_or_create(owner_user=user)
             courses_qs = Course.objects.filter(organization__isnull=True, creator=user)
-            events_qs = Event.objects.filter(course__organization__isnull=True, organizer=user)
+            events_qs = Event.objects.filter(organizer=user)
+            memberships_qs = OrgMembership.objects.none()
 
-        metrics = self._calculate_metrics(courses_qs, events_qs, active_org, now)
+        metrics = self._calculate_complex_metrics(
+            courses_qs,
+            events_qs,
+            memberships_qs,
+            active_org,
+            now,
+            wallet,
+            NET_PERCENTAGE
+        )
+
+        best_courses = courses_qs.annotate(
+            student_count=Count('enrollments', filter=Q(enrollments__status='active')),
+            revenue=Coalesce(
+                Sum(
+                    Coalesce(F('enrollments__course__price'), Value(0)) * NET_PERCENTAGE,
+                    filter=Q(enrollments__status='active'),
+                    output_field=DecimalField()
+                ),
+                Decimal('0')
+            )
+        ).order_by('-student_count')[:5]
+
+        best_events = events_qs.annotate(
+            attendee_count=Count('registrations', filter=Q(registrations__status='registered')),
+            revenue=Coalesce(
+                Sum(
+                    Coalesce(F('price'), Value(0)) * NET_PERCENTAGE,
+                    filter=Q(registrations__payment_status='paid'),
+                    output_field=DecimalField()
+                ),
+                Decimal('0')
+            )
+        ).order_by('-attendee_count')[:5]
 
         upcoming_classes = LiveLesson.objects.filter(
             live_class__course__in=courses_qs,
@@ -720,54 +782,54 @@ class TutorDashboardView(APIView):
             end_datetime__gte=now
         ).select_related('live_class', 'live_class__course').order_by('start_datetime')[:5]
 
-        upcoming_events = events_qs.filter(
-            start_time__gte=now,
-            event_status="approved"
-        ).order_by('start_time')[:5]
-
-        best_courses = courses_qs.annotate(
-            student_count=Count('enrollments', filter=Q(enrollments__status='active')),
-            revenue=Coalesce(
-                Sum('enrollments__course__price', filter=Q(enrollments__status='active')),
-                0,
-                output_field=DecimalField()
-            )
-        ).order_by('-student_count')[:5]
-
         return Response({
             "metrics": metrics,
             "upcoming_classes": DashboardLiveLessonSerializer(upcoming_classes, many=True, context={'request': request}).data,
-            "upcoming_events": DashboardEventMinimalSerializer(upcoming_events, many=True, context={'request': request}).data,
             "best_performing_courses": DashboardCourseMinimalSerializer(best_courses, many=True, context={'request': request}).data,
+            "best_performing_events": DashboardEventMinimalSerializer(best_events, many=True, context={'request': request}).data,
         })
 
-    def _calculate_metrics(self, courses_qs, events_qs, active_org, now):
-        total_students = Enrollment.objects.filter(
-            course__in=courses_qs,
-            status='active'
-        ).values('user').distinct().count()
-
-        revenue_total = Enrollment.objects.filter(
+    def _calculate_complex_metrics(self, courses_qs, events_qs, memberships_qs, active_org, now, wallet, net_pct):
+        course_revenue = Enrollment.objects.filter(
             course__in=courses_qs,
             status='active'
         ).aggregate(
-            total=Coalesce(Sum('course__price'), 0, output_field=DecimalField())
-        )['total']
+            total=Sum(
+                Coalesce(F('course__price'), Value(0)) * net_pct,
+                output_field=DecimalField()
+            )
+        )['total'] or Decimal('0')
 
-        active_tutors = 1
-        if active_org:
-            active_tutors = OrgMembership.objects.filter(
-                organization=active_org,
-                role__in=['tutor', 'admin', 'owner'],
-                is_active=True
-            ).count()
+        event_revenue = EventRegistration.objects.filter(
+            event__in=events_qs,
+            payment_status='paid'
+        ).aggregate(
+            total=Sum(
+                Coalesce(F('event__price'), Value(0)) * net_pct,
+                output_field=DecimalField()
+            )
+        )['total'] or Decimal('0')
+
+        sub_revenue = memberships_qs.aggregate(
+            total=Sum(
+                Coalesce(F('organization__membership_price'), Value(0)) * net_pct,
+                output_field=DecimalField()
+            )
+        )['total'] or Decimal('0')
+
+        active_students = Enrollment.objects.filter(course__in=courses_qs, status='active').values('user').distinct().count()
 
         return {
             "total_courses": courses_qs.count(),
-            "active_students": total_students,
-            "total_revenue": float(revenue_total),
-            "upcoming_events": events_qs.filter(start_time__gte=now).count(),
-            "active_tutors": active_tutors
+            "active_students": active_students,
+            "available_balance": float(wallet.balance),
+            "net_lifetime_revenue": float(course_revenue + event_revenue + sub_revenue),
+            "revenue_breakdown": {
+                "courses": float(course_revenue),
+                "events": float(event_revenue),
+                "subscriptions": float(sub_revenue) if sub_revenue > 0 else 0
+            },
+            "upcoming_events": events_qs.filter(end_time__gte=now).count(),
         }
 
 

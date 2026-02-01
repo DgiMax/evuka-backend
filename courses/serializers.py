@@ -15,10 +15,11 @@ from .models import (
     Course, Module, Lesson, GlobalCategory, GlobalLevel, GlobalSubCategory,
     LessonProgress, Quiz, Question, Option, CourseAssignment, QuizAttempt,
     Answer, AssignmentSubmission, Enrollment, CourseNote, CourseQuestion,
-    CourseReply, LessonResource
+    CourseReply, LessonResource, Certificate
 )
 from users.models import CreatorProfile
 from books.serializers import BookListSerializer
+from .services import CourseProgressService
 
 User = get_user_model()
 
@@ -361,24 +362,25 @@ class LessonLearningSerializer(serializers.ModelSerializer):
     last_watched_timestamp = serializers.SerializerMethodField()
     quizzes = QuizLearningSerializer(many=True, read_only=True)
     resources = LessonResourceSerializer(many=True, read_only=True)
+    video_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Lesson
         fields = (
-            "id", "title", "content", "video_file", "resources",
-            "estimated_duration_minutes", "is_completed", "last_watched_timestamp",
-            "quizzes"
+            "id", "title", "content", "video_url", "resources",
+            "estimated_duration_minutes", "is_completed",
+            "last_watched_timestamp", "quizzes"
         )
 
-    def get_user(self):
-        if "request" not in self.context:
-            return None
-        return self.context["request"].user
+    def get_video_url(self, obj):
+        if obj.video_file:
+            request = self.context.get('request')
+            url = request.build_absolute_uri(obj.video_file.url)
+            return url.replace('\\', '/').replace('%5C', '/')
+        return None
 
     def _get_progress(self, obj):
-        user = self.get_user()
-        if not user:
-            return None
+        user = self.context.get('request').user
         return LessonProgress.objects.filter(user=user, lesson=obj).first()
 
     def get_is_completed(self, obj):
@@ -401,43 +403,52 @@ class ModuleLearningSerializer(ModuleBaseSerializer):
 class CourseLearningSerializer(serializers.ModelSerializer):
     modules = ModuleLearningSerializer(many=True, read_only=True)
     live_classes = LiveClassStudentSerializer(many=True, read_only=True)
-    creator_name = serializers.CharField(
-        source='creator_profile.user.get_full_name', read_only=True
-    )
-    is_enrolled = serializers.BooleanField(read_only=True)
+    instructor = InstructorSummarySerializer(source="creator_profile", read_only=True)
+    progress = serializers.SerializerMethodField()
+    certificate = serializers.SerializerMethodField()
+    current_lesson_id = serializers.SerializerMethodField()
+    is_enrolled = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
         fields = (
-            "title",
-            "slug",
-            "long_description",
-            "learning_objectives",
-            "creator_name",
-            "is_enrolled",
-            "modules",
-            "live_classes"
+            "id", "title", "slug", "long_description", "learning_objectives",
+            "instructor", "is_enrolled", "progress", "certificate",
+            "current_lesson_id", "modules", "live_classes"
         )
+
+    def get_progress(self, obj):
+        user = self.context.get('request').user
+        service = CourseProgressService(user, obj)
+        return service.calculate_progress()
+
+    def get_is_enrolled(self, obj):
+        user = self.context.get('request').user
+        if user.is_anonymous:
+            return False
+        # Check if an active enrollment exists for this user and course
+        return Enrollment.objects.filter(user=user, course=obj, status='active').exists()
+
+    def get_certificate(self, obj):
+        user = self.context.get('request').user
+        cert = Certificate.objects.filter(user=user, course=obj).first()
+        return {"uid": cert.certificate_uid, "issued_at": cert.issue_date} if cert else None
+
+    def get_current_lesson_id(self, obj):
+        user = self.context.get('request').user
+        if user.is_anonymous:
+            return None
+
+        last_progress = LessonProgress.objects.filter(
+            user=user,
+            lesson__module__course=obj
+        ).order_by('-id').first()
+
+        return last_progress.lesson_id if last_progress else None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-
-        if 'request' in self.context and 'live_classes' in data:
-            live_classes_qs = instance.live_classes.all()
-            data['live_classes'] = LiveClassStudentSerializer(
-                live_classes_qs,
-                many=True,
-                context=self.context
-            ).data
-
-        if 'request' in self.context and 'modules' in data:
-            modules_qs = instance.modules.all()
-            data['modules'] = ModuleLearningSerializer(
-                modules_qs,
-                many=True,
-                context=self.context
-            ).data
-
+        # Prefetch optimizations are handled in the ViewSet
         return data
 
 
