@@ -196,13 +196,22 @@ class OrgMembership(models.Model):
             )
 
     def save(self, *args, **kwargs):
-        is_new_or_activated = (
-                self.pk is None or
-                (OrgMembership.objects.filter(pk=self.pk, is_active=False).exists() and self.is_active == True)
-        )
+        is_new = self.pk is None
+        is_activating = False
+
+        if not is_new:
+            old_instance = OrgMembership.objects.get(pk=self.pk)
+            if not old_instance.is_active and self.is_active:
+                is_activating = True
+
         super().save(*args, **kwargs)
-        if is_new_or_activated and self.role == 'student':
+
+        if (is_new or is_activating) and self.role == 'student' and self.is_active:
             self.sync_access()
+
+        if (is_new or is_activating) and self.is_active:
+            from .utils import send_membership_welcome_email
+            send_membership_welcome_email(self)
 
 
 class GuardianLink(models.Model):

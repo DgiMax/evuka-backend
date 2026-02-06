@@ -1,36 +1,53 @@
-from rest_framework import views, status
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from django.db.models import Q
+from django.db.models import Q, F
 from .models import HelpCategory, HelpArticle
 from .serializers import HelpCategorySerializer, HelpArticleSerializer
 
 
-class HelpCenterView(views.APIView):
-    permission_classes = [AllowAny]  # Publicly accessible
+class HelpCategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = HelpCategory.objects.all()
+    serializer_class = HelpCategorySerializer
+    permission_classes = [AllowAny]
+    lookup_field = 'slug'
 
-    def get(self, request):
-        query = request.query_params.get('search', '').strip()
+
+class HelpArticleViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = HelpArticle.objects.filter(is_published=True)
+    serializer_class = HelpArticleSerializer
+    permission_classes = [AllowAny]
+    lookup_field = 'slug'
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        query = self.request.query_params.get('search')
+        category_slug = self.request.query_params.get('category')
 
         if query:
-            # Search Mode: Return flat list of matching articles
-            articles = HelpArticle.objects.filter(
-                Q(question__icontains=query) | Q(answer__icontains=query),
-                is_published=True
-            )[:10]  # Limit results
-            serializer = HelpArticleSerializer(articles, many=True)
-            return Response({'type': 'search_results', 'data': serializer.data})
+            queryset = queryset.filter(
+                Q(question__icontains=query) | Q(answer__icontains=query)
+            )
 
+        if category_slug:
+            queryset = queryset.filter(category__slug=category_slug)
+
+        return queryset
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        HelpArticle.objects.filter(pk=instance.pk).update(views_count=F('views_count') + 1)
+        return super().retrieve(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def feedback(self, request, slug=None):
+        article = self.get_object()
+        is_helpful = request.data.get('helpful')
+
+        if is_helpful:
+            HelpArticle.objects.filter(pk=article.pk).update(helpful_count=F('helpful_count') + 1)
         else:
-            # Browse Mode: Return Categories + Top FAQs
-            categories = HelpCategory.objects.all()
+            HelpArticle.objects.filter(pk=article.pk).update(not_helpful_count=F('not_helpful_count') + 1)
 
-            # Fetch a few "Popular" FAQs (e.g., generic logic or specific flag)
-            # Here we just take the first 5 published ones
-            faqs = HelpArticle.objects.filter(is_published=True).order_by('-created_at')[:5]
-
-            return Response({
-                'type': 'browse',
-                'categories': HelpCategorySerializer(categories, many=True).data,
-                'faqs': HelpArticleSerializer(faqs, many=True).data
-            })
+        return Response({'status': 'feedback received'}, status=status.HTTP_200_OK)

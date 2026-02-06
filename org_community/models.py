@@ -54,22 +54,28 @@ class AdvancedOrgInvitation(models.Model):
     GOV_ROLES = [
         ('owner', 'Owner'),
         ('admin', 'Admin'),
-        ('member', 'Member'),
+        ('tutor', 'Tutor'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="invitations")
 
-    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
-                                   related_name="sent_invites")
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="sent_invites"
+    )
     email = models.EmailField()
 
-    gov_role = models.CharField(max_length=20, choices=GOV_ROLES, default='member')
+    gov_role = models.CharField(max_length=20, choices=GOV_ROLES, default='tutor')
     gov_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     is_tutor_invite = models.BooleanField(default=False)
     tutor_commission = models.DecimalField(
-        max_digits=5, decimal_places=2, default=0.00,
+        max_digits=5,
+        decimal_places=2,
+        default=0.00,
         validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
     tutor_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
@@ -87,6 +93,10 @@ class AdvancedOrgInvitation(models.Model):
     def is_fully_resolved(self):
         gov_done = self.gov_status in ['accepted', 'rejected', 'revoked']
         tutor_done = (not self.is_tutor_invite) or (self.tutor_status in ['accepted', 'rejected', 'revoked'])
+
+        if self.gov_status == 'accepted' and self.is_tutor_invite:
+            return self.tutor_status in ['accepted', 'rejected', 'revoked']
+
         return gov_done and tutor_done
 
 

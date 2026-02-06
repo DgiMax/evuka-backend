@@ -1,6 +1,7 @@
 import pytz
 from datetime import datetime, timedelta
 from django.utils import timezone
+import uuid
 from django.db.models import Q
 from rest_framework import serializers
 from courses.models import Course, Enrollment
@@ -30,13 +31,31 @@ class LiveLessonSerializer(serializers.ModelSerializer):
     status = serializers.ReadOnlyField()
     effective_end_datetime = serializers.DateTimeField(read_only=True)
 
+    live_class = serializers.PrimaryKeyRelatedField(
+        queryset=LiveClass.objects.all(),
+        required=False
+    )
+
     class Meta:
         model = LiveLesson
         fields = [
-            "id", "title", "description", "start_datetime", "end_datetime",
-            "effective_end_datetime", "status", "resources", "chat_room_id",
-            "is_cancelled", "extension_minutes", "is_mic_locked", "is_camera_locked"
+            "id", "live_class", "title", "description", "start_datetime",
+            "end_datetime", "effective_end_datetime", "status", "resources",
+            "chat_room_id", "is_cancelled", "extension_minutes",
+            "is_mic_locked", "is_camera_locked"
         ]
+        extra_kwargs = {
+            'chat_room_id': {'required': False, 'allow_null': True}
+        }
+
+    def create(self, validated_data):
+        """
+        Handles manual lesson creation, ensuring a chat room ID is generated.
+        """
+        if not validated_data.get('chat_room_id'):
+            validated_data['chat_room_id'] = uuid.uuid4().hex
+
+        return super().create(validated_data)
 
 
 class LiveClassStudentSerializer(serializers.ModelSerializer):

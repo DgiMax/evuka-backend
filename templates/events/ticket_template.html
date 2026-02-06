@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        /* Strict page sizing for WeasyPrint */
+        @page { size: 150mm 100mm; margin: 0; }
+
+        :root {
+            --primary: #5c4b99;
+            --text-dark: #1a1a1a;
+            --text-muted: #9ca3af;
+            --bg-page: #f0f0f0;
+            --bg-card: #ffffff;
+        }
+
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-page);
+            -webkit-print-color-adjust: exact;
+        }
+
+        /* The container uses white-space: nowrap to keep columns on one line */
+        .ticket {
+            width: 150mm;
+            height: 100mm;
+            background: var(--bg-card);
+            overflow: hidden;
+            white-space: nowrap;
+            font-size: 0; /* Fixes inline-block spacing gaps */
+        }
+
+        .column {
+            display: inline-block;
+            vertical-align: top;
+            height: 100mm;
+            white-space: normal; /* Restore text wrapping inside columns */
+            font-size: 14px;
+        }
+
+        /* 1. Slim Maze Sidebar */
+        .pattern-side {
+            width: 8mm;
+            background-color: var(--primary);
+            /* SVG pattern needs to be small for PDF performance */
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath fill='%23ffffff' fill-opacity='0.15' d='M0 0h20v20H0V0zm10 17V3L3 10l7 7zm1 0l7-7-7-7v14z'/%3E%3C/svg%3E");
+        }
+
+        /* 2. Main content area */
+        .main-info {
+            width: 95mm;
+            padding: 25px 30px;
+            box-sizing: border-box;
+        }
+
+        .logo-placeholder {
+            font-size: 14px; font-weight: 900; color: var(--primary);
+            letter-spacing: 1.5px; text-transform: uppercase; border-bottom: 2px solid var(--primary);
+            display: inline-block; padding-bottom: 2px; margin-bottom: 10px;
+        }
+
+        .event-title {
+            font-size: 18px; font-weight: 800; color: var(--text-dark);
+            margin: 10px 0 20px 0; line-height: 1.2; text-transform: uppercase;
+        }
+
+        /* Replacing Grid with blocks for WeasyPrint compatibility */
+        .detail-row { width: 100%; margin-bottom: 15px; }
+
+        .detail-box {
+            display: inline-block;
+            width: 48%;
+            vertical-align: top;
+            margin-bottom: 12px;
+        }
+
+        .label { font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
+        .value { font-size: 10px; font-weight: 700; color: #374151; line-height: 1.3; }
+
+        .footer-tag {
+            font-size: 8px; color: #d1d5db; text-transform: uppercase;
+            letter-spacing: 1.5px; margin-top: 20px;
+        }
+
+        /* 3. The Indigo Stub */
+        .stub {
+            width: 47mm;
+            background: var(--primary);
+            color: white;
+            text-align: center;
+            border-left: 2px dashed rgba(255,255,255,0.3);
+            position: relative;
+        }
+
+        /* Decorative punch-holes */
+        .stub::before, .stub::after {
+            content: ''; position: absolute; left: -11px; width: 22px; height: 22px;
+            background-color: var(--bg-page); border-radius: 50%;
+        }
+        .stub::before { top: -11px; }
+        .stub::after { bottom: -11px; }
+
+        .qr-code-wrapper {
+            background: white;
+            padding: 8px;
+            border-radius: 4px;
+            display: inline-block;
+            margin-top: 50px;
+            margin-bottom: 10px;
+        }
+
+        /* Strict sizing for the QR image */
+        .qr-code { width: 85px; height: 85px; display: block; border: 0; }
+
+        .ticket-id { font-size: 9px; font-family: monospace; opacity: 0.8; margin-top: 5px; }
+
+        .scan-text {
+            font-size: 8px; margin-top: 25px; letter-spacing: 2px;
+            text-transform: uppercase; font-weight: 600; opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="ticket">
+        <div class="column pattern-side"></div>
+
+        <div class="column main-info">
+            <div class="logo-placeholder">evuka</div>
+            <div class="event-title">{{ event.title }}</div>
+
+            <div class="detail-row">
+                <div class="detail-box">
+                    <div class="label">Date & Time</div>
+                    <div class="value">{{ event.start_time|date:"D, d M Y" }}<br>{{ event.start_time|date:"H:i" }}</div>
+                </div>
+                <div class="detail-box">
+                    <div class="label">Venue</div>
+                    <div class="value">{{ event.location|default:"TBA" }}</div>
+                </div>
+                <div class="detail-box">
+                    <div class="label">Attendee</div>
+                    <div class="value">{{ user.get_full_name|default:user.username|upper }}</div>
+                </div>
+                <div class="detail-box">
+                    <div class="label">Pass Type</div>
+                    <div class="value">{{ event.get_event_type_display }} Entry</div>
+                </div>
+            </div>
+
+            <div class="footer-tag">Official Pass &bull; #{{ ticket_id|slice:":8"|upper }}</div>
+        </div>
+
+        <div class="column stub">
+            <div class="qr-code-wrapper">
+                {% if qr_code_base64 %}
+                    <img src="{{ qr_code_base64 }}" class="qr-code" alt="QR">
+                {% else %}
+                    <div style="background: white; color: red; font-size: 8px; width: 85px; height: 85px; line-height: 85px;">QR Missing</div>
+                {% endif %}
+            </div>
+            <div class="ticket-id">ID: {{ ticket_id|slice:":12"|upper }}</div>
+            <div class="scan-text">Security Scan <br>Required</div>
+        </div>
+    </div>
+</body>
+</html>

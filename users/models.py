@@ -3,18 +3,44 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
+from django.db import models, transaction
 
 
 class User(AbstractUser):
+    """
+    User model optimized for asynchronous background workflows.
+    """
     is_verified = models.BooleanField(default=False)
-
-    # Platform-wide role flags
-    is_tutor = models.BooleanField(default=False)
     is_student = models.BooleanField(default=False)
+    is_tutor = models.BooleanField(default=False)
     is_publisher = models.BooleanField(default=False)
 
-    def __str__(self):
-        return self.username
+    ecosystem_email_sent = models.BooleanField(default=False)
+    roles_welcome_sent = models.JSONField(default=dict, blank=True)
+
+    def save(self, *args, **kwargs):
+        """
+        Schedules background tasks for verified users.
+        """
+        super().save(*args, **kwargs)
+
+        if self.is_verified:
+            from .tasks import send_ecosystem_overview_task, send_unified_welcome_task
+
+            if not self.ecosystem_email_sent:
+                updated = User.objects.filter(pk=self.pk, ecosystem_email_sent=False).update(ecosystem_email_sent=True)
+                if updated:
+                    transaction.on_commit(lambda: send_ecosystem_overview_task.delay(self.pk))
+
+            current_roles = []
+            if self.is_student: current_roles.append('student')
+            if self.is_tutor: current_roles.append('tutor')
+            if self.is_publisher: current_roles.append('publisher')
+
+            new_roles = [r for r in current_roles if r not in self.roles_welcome_sent]
+
+            if new_roles:
+                transaction.on_commit(lambda: send_unified_welcome_task.delay(self.pk, new_roles))
 
 
 class Subject(models.Model):

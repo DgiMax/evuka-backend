@@ -26,8 +26,19 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from weasyprint import HTML
+from django.http import HttpResponse
 
-from books.models import BookAccess
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import permissions
+from django.utils import timezone
+from django.db.models import Q
+from datetime import timedelta, datetime
+from collections import defaultdict
+
+from books.models import BookAccess, Book
+from books.serializers import BookListSerializer, BookShortSerializer, DashboardBookPerformanceSerializer
 from courses.models import Course, Enrollment, LessonProgress
 from events.models import Event, EventRegistration
 from live.models import LiveLesson
@@ -78,51 +89,37 @@ signer = TimestampSigner()
 import logging
 logger = logging.getLogger(__name__)
 
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
     def perform_create(self, serializer):
         try:
-            logger.info("Starting user registration...")
-            print("DEBUG: Starting user registration...")
-
-            # Save user
             user = serializer.save()
-            logger.info(f"User saved: {user}")
-            print(f"DEBUG: User saved: {user}")
 
-            # Generate token and verification URL
+            origin = self.request.data.get('origin', settings.FRONTEND_URL).rstrip('/')
+
             token = signer.sign(user.email)
-            verification_url = f"{settings.FRONTEND_URL}/verify-email/{token}/"
-            logger.info(f"Verification URL: {verification_url}")
-            print(f"DEBUG: Verification URL: {verification_url}")
+            verification_url = f"{origin}/verify-email/{token}/"
 
-            # Render email
             html_message = render_to_string('emails/verify_email.html', {
                 'user': user,
                 'verification_url': verification_url
             })
             plain_message = strip_tags(html_message)
-            logger.info("Email rendered successfully")
-            print("DEBUG: Email rendered successfully")
 
-            # Send email
             send_mail(
                 subject="Verify your account",
                 message=plain_message,
                 html_message=html_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
-                fail_silently=False  # Change to False to catch email errors
+                fail_silently=False
             )
-            logger.info("Email sent successfully")
-            print("DEBUG: Email sent successfully")
-
         except Exception as e:
             logger.error(f"Registration failed: {e}", exc_info=True)
-            print(f"DEBUG: Registration failed: {e}")
-            raise e  # re-raise so DRF returns the error
+            raise e
 
 class VerifyEmailView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -138,6 +135,7 @@ class VerifyEmailView(APIView):
         except Exception:
             return Response({"detail": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
 
+
 class ForgotPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -146,13 +144,15 @@ class ForgotPasswordView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
 
+        origin = request.data.get('origin', settings.FRONTEND_URL).rstrip('/')
+
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             return Response({"detail": "If email exists, a reset link will be sent."})
 
         token = signer.sign(user.email)
-        reset_url = f"{settings.FRONTEND_URL}/reset-password/{token}/"
+        reset_url = f"{origin}/reset-password/{token}/"
 
         html_message = render_to_string('emails/password_reset.html', {
             'user': user,
@@ -170,6 +170,7 @@ class ForgotPasswordView(APIView):
         )
 
         return Response({"detail": "Password reset email sent."})
+
 
 class ResetPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -198,18 +199,29 @@ class ChangePasswordView(APIView):
         user.save()
         return Response({"detail": "Password changed successfully."})
 
+
 class ResendVerificationView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
+        email = request.data.get("email", "").strip().lower()
+        origin = request.data.get('origin', settings.FRONTEND_URL).rstrip('/')
+
+        success_response = Response(
+            {"detail": "If an account exists with this email, a verification link has been sent."},
+            status=status.HTTP_200_OK
+        )
+
+        if not email:
+            return Response({"detail": "Email is required."}, status=400)
+
         try:
             user = User.objects.get(email=email)
             if user.is_verified:
-                return Response({"detail": "User already verified."}, status=400)
+                return success_response
 
             token = signer.sign(user.email)
-            verification_url = f"{settings.FRONTEND_URL}/verify-email/{token}/"
+            verification_url = f"{origin}/verify-email/{token}/"
 
             html_message = render_to_string('emails/verify_email.html', {
                 'user': user,
@@ -218,16 +230,18 @@ class ResendVerificationView(APIView):
             plain_message = strip_tags(html_message)
 
             send_mail(
-                subject="Verify your account",
+                subject="Verify your Evuka account",
                 message=plain_message,
                 html_message=html_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
-                fail_silently=True
+                fail_silently=False
             )
-            return Response({"detail": "Verification email sent."})
+            return success_response
         except User.DoesNotExist:
-            return Response({"detail": "User not found."}, status=400)
+            return success_response
+        except Exception as e:
+            return Response({"detail": "An error occurred."}, status=500)
 
 
 class LoginView(APIView):
@@ -456,7 +470,7 @@ class CurrentUserView(APIView):
                 "organization_name": org.name,
                 "organization_slug": org.slug,
                 "organization_status": org.status,
-                "is_published": org.status == 'published',
+                "is_published": org.status == 'approved',
                 "role": membership.role,
                 "is_active": membership.is_active,
             })
@@ -504,6 +518,9 @@ class StudentDashboardAPIView(APIView):
         active_slug = request.query_params.get('active_org')
         now = timezone.now()
 
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
         active_org = None
         if active_slug:
             active_org = Organization.objects.filter(
@@ -534,9 +551,16 @@ class StudentDashboardAPIView(APIView):
                 "next_lesson": self._get_next_lesson(user, course)
             })
 
+        today_live = LiveLesson.objects.filter(
+            live_class__course__in=enrolled_courses,
+            start_datetime__gte=today_start,
+            start_datetime__lt=today_end,
+            is_cancelled=False
+        ).select_related('live_class', 'live_class__course').order_by('start_datetime')
+
         upcoming_live = LiveLesson.objects.filter(
             live_class__course__in=enrolled_courses,
-            start_datetime__gte=now - timedelta(minutes=20),
+            start_datetime__gte=today_end,
             start_datetime__lte=now + timedelta(days=7),
             is_cancelled=False
         ).select_related('live_class', 'live_class__course').order_by('start_datetime')
@@ -544,8 +568,8 @@ class StudentDashboardAPIView(APIView):
         upcoming_events = Event.objects.filter(
             registrations__user=user,
             registrations__status='registered',
-            start_time__gte=now,
-            event_status__in=['approved', 'scheduled']
+            end_time__gt=now,
+            event_status__in=['approved', 'scheduled', 'ongoing']
         ).filter(course__in=enrolled_courses).order_by('start_time')[:5]
 
         my_books = BookAccess.objects.filter(user=user).select_related('book').order_by('-granted_at')[:4]
@@ -561,7 +585,8 @@ class StudentDashboardAPIView(APIView):
                 "label": active_org.name if active_org else "Personal Workspace",
                 "org_slug": active_slug
             },
-            "live_now": self._serialize_live_sessions(upcoming_live, now),
+            "live_today": self._serialize_live_sessions(today_live, now),
+            "live_upcoming": self._serialize_live_sessions(upcoming_live, now),
             "courses": course_data,
             "events": self._serialize_events(upcoming_events, request),
             "library": self._serialize_books(my_books, request),
@@ -584,13 +609,18 @@ class StudentDashboardAPIView(APIView):
         data = []
         for session in queryset:
             is_live = session.start_datetime <= now <= session.effective_end_datetime
+            can_join = is_live or (
+                        now >= (session.start_datetime - timedelta(minutes=10)) and now < session.start_datetime)
+
             data.append({
                 "id": session.id,
                 "title": session.title,
                 "course": session.live_class.course.title,
+                "course_slug": session.live_class.course.slug,
                 "start": session.start_datetime,
                 "is_live": is_live,
-                "room_id": session.chat_room_id if is_live else None
+                "can_join": can_join,
+                "room_id": session.chat_room_id if can_join else None
             })
         return data
 
@@ -620,6 +650,111 @@ class StudentDashboardAPIView(APIView):
         } for m in queryset]
 
 
+class StudentLiveLessonsAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+
+        active_slug = request.query_params.get('active_org')
+        search_query = request.query_params.get('search', '')
+        filter_date_str = request.query_params.get('date', None)
+
+        active_org = None
+        if active_slug:
+            active_org = Organization.objects.filter(
+                slug=active_slug,
+                memberships__user=user,
+                memberships__is_active=True
+            ).first()
+
+        context_query = Q(live_class__organization=active_org) if active_org else Q(
+            live_class__organization__isnull=True)
+
+        enrolled_course_ids = Enrollment.objects.filter(
+            user=user,
+            status='active'
+        ).values_list('course_id', flat=True)
+
+        lessons_qs = LiveLesson.objects.filter(
+            live_class__course_id__in=enrolled_course_ids,
+            is_cancelled=False
+        ).filter(context_query).select_related('live_class', 'live_class__course').order_by('start_datetime')
+
+        if search_query:
+            lessons_qs = lessons_qs.filter(
+                Q(title__icontains=search_query) |
+                Q(live_class__course__title__icontains=search_query) |
+                Q(live_class__title__icontains=search_query)
+            )
+
+        if filter_date_str:
+            try:
+                filter_date = datetime.strptime(filter_date_str, '%Y-%m-%d').date()
+                lessons_qs = lessons_qs.filter(start_datetime__date=filter_date)
+            except ValueError:
+                pass
+
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        today_sessions = []
+
+        nested_structure = {}
+
+        for lesson in lessons_qs:
+            is_live = lesson.start_datetime <= now <= lesson.effective_end_datetime
+            can_join = is_live or (
+                        now >= (lesson.start_datetime - timedelta(minutes=10)) and now < lesson.start_datetime)
+
+            lesson_data = {
+                "id": lesson.id,
+                "title": lesson.title,
+                "course_title": lesson.live_class.course.title,
+                "course_slug": lesson.live_class.course.slug,
+                "start": lesson.start_datetime,
+                "end": lesson.end_datetime,
+                "is_live": is_live,
+                "can_join": can_join,
+                "status": lesson.status
+            }
+
+            if today_start <= lesson.start_datetime < today_end:
+                today_sessions.append(lesson_data)
+
+            c_title = lesson.live_class.course.title
+            lc_title = lesson.live_class.title
+
+            if c_title not in nested_structure:
+                nested_structure[c_title] = {}
+
+            if lc_title not in nested_structure[c_title]:
+                nested_structure[c_title][lc_title] = []
+
+            nested_structure[c_title][lc_title].append(lesson_data)
+
+        grouped_data = []
+        for c_name, classes in nested_structure.items():
+            class_list = []
+            for lc_name, lessons in classes.items():
+                class_list.append({"class_title": lc_name, "lessons": lessons})
+            grouped_data.append({"course": c_name, "classes": class_list})
+
+        return Response({
+            "context": {
+                "type": "organization" if active_org else "personal",
+                "label": active_org.name if active_org else "Personal Workspace",
+            },
+            "happening_today": today_sessions,
+            "grouped_data": grouped_data,
+            "meta": {
+                "total_count": lessons_qs.count(),
+                "filter_date": filter_date_str
+            }
+        })
+
+
 class StudentProfileManageView(generics.RetrieveUpdateAPIView, generics.CreateAPIView):
     """
     A single view for a user to manage their StudentProfile.
@@ -635,8 +770,11 @@ class StudentProfileManageView(generics.RetrieveUpdateAPIView, generics.CreateAP
         return StudentProfileSerializer
 
     def get_queryset(self):
-        """Returns the logged-in user's StudentProfile."""
-        return StudentProfile.objects.filter(user=self.request.user)
+        return StudentProfile.objects.filter(user=self.request.user).annotate(
+            enrolled_courses_count=Count('user__enrollments', filter=Q(user__enrollments__status='active')),
+            completed_courses_count=Count('user__enrollments', filter=Q(user__enrollments__status='completed')),
+            certificates_count=Count('user__certificates')
+        ).prefetch_related('user__certificates', 'user__memberships')
 
     def get_object(self):
         """
@@ -906,6 +1044,67 @@ class TutorAnalyticsView(APIView):
         })
 
 
+class ExportTutorPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+        active_org = getattr(request, "active_organization", None)
+
+        if active_org:
+            courses_base = Course.objects.filter(organization=active_org)
+            enrollment_qs = Enrollment.objects.filter(course__organization=active_org)
+            events_qs = Event.objects.filter(course__organization=active_org)
+        else:
+            courses_base = Course.objects.filter(organization__isnull=True, creator=user)
+            enrollment_qs = Enrollment.objects.filter(course__creator=user)
+            events_qs = Event.objects.filter(organizer=user)
+
+        total_course_revenue = enrollment_qs.aggregate(
+            total=Sum(Coalesce(F('course__price'), Value(0), output_field=DecimalField()))
+        )['total'] or Decimal('0')
+
+        total_event_revenue = events_qs.aggregate(
+            total=Sum(Coalesce(F('price'), Value(0), output_field=DecimalField()))
+        )['total'] or Decimal('0')
+
+        metrics = {
+            "total_revenue": float(total_course_revenue + total_event_revenue),
+            "total_enrollments": enrollment_qs.count(),
+            "active_courses": courses_base.filter(status='published').count(),
+            "avg_rating": courses_base.aggregate(Avg('rating_avg'))['rating_avg__avg'] or 0,
+            "total_events": events_qs.count()
+        }
+
+        course_performance = courses_base.annotate(
+            student_count=Count('enrollments', distinct=True),
+            revenue=Coalesce(
+                Sum(F('enrollments__course__price'), output_field=DecimalField()),
+                Value(0, output_field=DecimalField())
+            )
+        ).order_by('-student_count')
+
+        context = {
+            'tutor': user.get_full_name() or user.username,
+            'organization': active_org.name if active_org else "Personal Account",
+            'metrics': metrics,
+            'courses': course_performance,
+            'events': events_qs.filter(start_time__gte=now).order_by('start_time')[:10],
+            'date': now.strftime("%B %d, %Y"),
+        }
+
+        html_string = render_to_string('pdf/tutor_report.html', context)
+        html = HTML(string=html_string, base_url=request.build_absolute_uri())
+        pdf_file = html.write_pdf()
+
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        filename = f"Tutor_Report_{now.strftime('%Y%m%d')}.pdf"
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        return response
+
+
 class PublicTutorViewSet(mixins.RetrieveModelMixin,
                          mixins.ListModelMixin,
                          viewsets.GenericViewSet):
@@ -983,8 +1182,10 @@ class NewsletterSubscribeView(generics.CreateAPIView):
         )
 
     def _send_welcome_email(self, email):
+        origin = self.request.data.get('origin', settings.FRONTEND_URL).rstrip('/')
+
         token = signer.sign(email)
-        unsubscribe_url = f"{settings.FRONTEND_URL}/newsletter/unsubscribe/{token}"
+        unsubscribe_url = f"{origin}/newsletter/unsubscribe/{token}"
 
         html_message = render_to_string('emails/newsletter_welcome.html', {
             'unsubscribe_url': unsubscribe_url
@@ -1171,3 +1372,70 @@ class SearchInstructorsView(generics.ListAPIView):
         qs = User.objects.filter(base_filters).select_related('creator_profile').distinct()
 
         return qs[:10]
+
+
+class PublisherDashboardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+
+        COMMISSION_RATE = Decimal('0.10')
+        NET_PERCENTAGE = Decimal('1.00') - COMMISSION_RATE
+
+        wallet, _ = Wallet.objects.get_or_create(owner_user=user)
+        books_qs = Book.objects.filter(created_by=user)
+
+        metrics = self._calculate_book_metrics(books_qs, wallet, NET_PERCENTAGE)
+
+        best_books = books_qs.annotate(
+            actual_sales=Count('readers'),
+            revenue=Coalesce(
+                Sum(
+                    Coalesce(F('price'), Value(0)) * NET_PERCENTAGE,
+                    output_field=DecimalField()
+                ),
+                Decimal('0')
+            )
+        ).order_by('-actual_sales')[:5]
+
+        recent_drafts = books_qs.filter(status='draft').order_by('-updated_at')[:5]
+
+        return Response({
+            "metrics": metrics,
+            "best_performing_books": DashboardBookPerformanceSerializer(
+                best_books,
+                many=True,
+                context={'request': request}
+            ).data,
+            "recent_drafts": BookShortSerializer(
+                recent_drafts,
+                many=True
+            ).data
+        })
+
+    def _calculate_book_metrics(self, books_qs, wallet, net_pct):
+        book_revenue = BookAccess.objects.filter(
+            book__in=books_qs
+        ).aggregate(
+            total=Sum(
+                Coalesce(F('book__price'), Value(0)) * net_pct,
+                output_field=DecimalField()
+            )
+        )['total'] or Decimal('0')
+
+        total_readers = BookAccess.objects.filter(book__in=books_qs).values('user').distinct().count()
+        total_views = books_qs.aggregate(total=Sum('view_count'))['total'] or 0
+
+        return {
+            "total_books": books_qs.count(),
+            "published_count": books_qs.filter(status='published').count(),
+            "total_readers": total_readers,
+            "total_views": total_views,
+            "available_balance": float(wallet.balance),
+            "net_book_revenue": float(book_revenue),
+        }
+
+
+

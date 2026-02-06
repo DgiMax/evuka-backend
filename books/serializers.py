@@ -99,6 +99,50 @@ class BookDetailSerializer(serializers.ModelSerializer):
         return None
 
 
+class BookReaderContentSerializer(serializers.ModelSerializer):
+    """
+    Dedicated serializer for the internal reader stage.
+    Includes sanitized file URLs and essential publisher/meta info.
+    """
+    publisher = PublisherSummarySerializer(source='publisher_profile', read_only=True)
+    book_file = serializers.SerializerMethodField()
+    cover_image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Book
+        fields = (
+            "id",
+            "slug",
+            "title",
+            "authors",
+            "book_format",
+            "book_file",
+            "cover_image",
+            "publisher",
+            "table_of_contents",
+            "reading_level"
+        )
+
+    def get_book_file(self, obj):
+        if obj.book_file:
+            request = self.context.get('request')
+            if request:
+                url = request.build_absolute_uri(obj.book_file.url)
+            else:
+                url = obj.book_file.url
+            # Clean backslashes for CDN/Web compatibility
+            return url.replace('\\', '/').replace('%5C', '/')
+        return None
+
+    def get_cover_image(self, obj):
+        if obj.cover_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.cover_image.url)
+            return obj.cover_image.url
+        return None
+
+
 class BookCreateUpdateSerializer(serializers.ModelSerializer):
     authors = serializers.CharField(required=False, allow_blank=True)
     isbn = serializers.CharField(required=False, allow_blank=True)
@@ -232,3 +276,21 @@ class BookShortSerializer(serializers.ModelSerializer):
     class Meta:
         model = Book
         fields = ('id', 'title', 'authors', 'cover_image', 'price', 'currency')
+
+
+class DashboardBookPerformanceSerializer(serializers.ModelSerializer):
+    actual_sales = serializers.IntegerField(read_only=True)
+    revenue = serializers.FloatField(read_only=True)
+
+    class Meta:
+        model = Book
+        fields = (
+            'id',
+            'title',
+            'slug',
+            'cover_image',
+            'actual_sales',
+            'revenue',
+            'rating_avg',
+            'status'
+        )

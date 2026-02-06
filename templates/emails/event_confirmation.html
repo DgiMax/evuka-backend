@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="x-apple-disable-message-reformatting">
+    <title>Registration Confirmed: {{ event.title }}</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .content-padding { padding: 30px 20px !important; }
+            .logo-padding { padding: 30px 0 10px 0 !important; }
+            .card-padding { padding: 0 20px 20px 20px !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f7f9; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #f4f7f9;">
+        <tr>
+            <td align="center" style="padding: 40px 10px;">
+                <table role="presentation" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 15px 35px rgba(0,0,0,0.05);" cellspacing="0" cellpadding="0" border="0">
+
+                    <tr>
+                        <td align="center" class="logo-padding" style="padding: 45px 0 25px 0;">
+                            <img src="https://lh3.googleusercontent.com/d/1oRZwmxOAUnhlXG5LudFyVBfIk92Jcnbn" alt="Evuka" width="130" style="display: block; border: none; outline: none;">
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td class="content-padding" style="padding: 0 50px 30px 50px; text-align: center;">
+                            <h1 style="color: #0f172a; font-size: 24px; font-weight: 800; margin: 0 0 12px 0; letter-spacing: -0.5px;">Registration Confirmed!</h1>
+                            <p style="color: #64748b; font-size: 15px; line-height: 1.5; margin: 0;">Hi <strong>{{ user.get_full_name|default:user.username }}</strong>, your spot for <strong>{{ event.title }}</strong> has been secured successfully.</p>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td class="card-padding" style="padding: 0 40px 25px 40px;">
+                            <table role="presentation" width="100%" style="background-color: #fafbfc; border: 1px solid #eef2f5; border-radius: 16px;" cellspacing="0" cellpadding="18" border="0">
+                                <tr>
+                                    <td>
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                            <tr>
+                                                <td style="padding-bottom: 8px;">
+                                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Date</span>
+                                                    <p style="margin: 2px 0 0 0; color: #1e293b; font-size: 14px; font-weight: 600;">{{ event.start_time|date:"l, d M Y" }}</p>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="padding-bottom: 8px; border-top: 1px solid #f1f5f9; padding-top: 8px;">
+                                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Time</span>
+                                                    <p style="margin: 2px 0 0 0; color: #1e293b; font-size: 14px; font-weight: 600;">{{ event.start_time|date:"H:i" }}</p>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td style="border-top: 1px solid #f1f5f9; padding-top: 8px;">
+                                                    <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Location</span>
+                                                    <p style="margin: 2px 0 0 0; color: #1e293b; font-size: 14px; font-weight: 600;">{{ event.location|default:"Online Session" }}</p>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td align="center" style="padding: 0 40px 45px 40px; text-align: center;">
+                            {% if event.event_type != 'online' %}
+                            <p style="color: #64748b; font-size: 14px; margin: 0 0 20px 0; line-height: 1.5;">Since this is a <strong>{{ event.event_type }}</strong> event, we have attached your entry ticket. Please have it ready on your phone at the entrance.</p>
+                            {% else %}
+                            <p style="color: #64748b; font-size: 14px; margin: 0 0 20px 0; line-height: 1.5;">This is an online event. Access the session link via your dashboard 1 hour before the start time.</p>
+                            {% endif %}
+
+                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin: 0 auto;">
+                                <tr>
+                                    <td align="center" style="border-radius: 12px; background-color: #5c4b99;">
+                                        <a href="https://e-vuka.com/dashboard/events" style="padding: 16px 35px; font-size: 15px; font-weight: 700; color: #ffffff; text-decoration: none; display: inline-block; font-family: sans-serif;">Go to Events Dashboard</a>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td style="background-color: #fafbfc; padding: 30px 40px; text-align: center; border-top: 1px solid #f1f5f9;">
+                            <p style="margin: 0; color: #94a3b8; font-size: 12px; font-weight: 500; line-height: 1.5;">
+                                Best regards,<br>
+                                <strong>The Evuka Team</strong>
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

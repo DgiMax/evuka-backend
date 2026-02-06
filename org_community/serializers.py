@@ -6,7 +6,6 @@ from organizations.serializers import OrgUserSerializer, OrganizationSimpleSeria
 
 User = get_user_model()
 
-
 class OrgDiscoverySerializer(serializers.ModelSerializer):
     stats = serializers.SerializerMethodField()
     is_member = serializers.SerializerMethodField()
@@ -26,10 +25,13 @@ class OrgDiscoverySerializer(serializers.ModelSerializer):
         return None
 
     def get_stats(self, obj):
-        tutors = OrgMembership.objects.filter(organization=obj, role__in=['owner', 'admin', 'tutor'],
-                                              is_active=True).count()
+        staff_count = OrgMembership.objects.filter(
+            organization=obj,
+            role__in=['owner', 'admin', 'tutor'],
+            is_active=True
+        ).count()
         students = OrgMembership.objects.filter(organization=obj, role='student', is_active=True).count()
-        return {"tutors": tutors, "students": students}
+        return {"tutors": staff_count, "students": students}
 
     def _get_user(self):
         request = self.context.get('request')
@@ -81,7 +83,7 @@ class OrgJoinRequestCreateSerializer(serializers.ModelSerializer):
         if OrgJoinRequest.objects.filter(user=user, organization=org, status='pending').exists():
             raise serializers.ValidationError("You already have a pending request for this organization.")
 
-        if role == 'tutor':
+        if role in ['tutor', 'admin']:
             if commission < 40:
                 raise serializers.ValidationError(
                     {"proposed_commission": "Minimum allowable commission request is 40%."})

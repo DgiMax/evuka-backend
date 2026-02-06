@@ -1,19 +1,33 @@
 from rest_framework import viewsets, mixins, permissions, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.http import HttpResponse
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
 from django.http import FileResponse, HttpResponseForbidden
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
+from weasyprint import HTML
 from django.db.models import Count, Q
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.views import APIView
 from django.utils import timezone
 from rest_framework import serializers
-from datetime import timedelta
 from django.db.models import Sum, Count, F
 from django.db.models.functions import TruncMonth
 from rest_framework import generics, filters, permissions
-from .serializers import BookShortSerializer
+from django.template.loader import render_to_string
+
+from revenue.models import Wallet
+from .filters import BookFilter
+from .serializers import BookShortSerializer, DashboardBookPerformanceSerializer, BookReaderContentSerializer
+from django.db.models import F, Sum, Count, Q, DecimalField, Value
+from django.db.models.functions import Coalesce, TruncMonth
+from decimal import Decimal
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from django.utils import timezone
+from datetime import timedelta
 
 from .models import Book, BookCategory, BookSubCategory, BookAccess
 from .serializers import (
@@ -31,7 +45,9 @@ class PublicBookViewSet(viewsets.ReadOnlyModelViewSet):
     lookup_field = "slug"
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
 
-    filterset_fields = ['is_free', 'book_format', 'reading_level', 'categories__slug', 'subcategories__slug']
+    # Use the new FilterSet class instead of the basic fields list
+    filterset_class = BookFilter
+
     search_fields = ["title", "authors", "short_description", "tags"]
     ordering_fields = ["created_at", "rating_avg", "price", "sales_count"]
 
@@ -153,60 +169,70 @@ class BookFormOptionsView(APIView):
 
 
 class PublisherAnalyticsView(APIView):
-    """
-    Aggregates analytics for the logged-in publisher.
-    Returns:
-    - KPIs (Total Revenue, Sales, Views)
-    - Monthly Trend Data (for graphs)
-    - Per-Book Performance
-    """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
+        now = timezone.now()
+        six_months_ago = now - timedelta(days=180)
 
-        # 1. Base Queryset (All books by this user)
-        books = Book.objects.filter(created_by=user)
+        COMMISSION_RATE = Decimal('0.10')
+        NET_PERCENTAGE = Decimal('1.00') - COMMISSION_RATE
 
-        # 2. High-Level KPIs
-        total_revenue = books.aggregate(total=Sum('sales_count') * F('price'))['total'] or 0
-        # Note: A real implementation would query a separate 'Order' model for accurate revenue.
-        # For this example, we estimate Revenue = Price * Sales Count.
+        books_qs = Book.objects.filter(created_by=user)
 
-        total_sales = books.aggregate(total=Sum('sales_count'))['total'] or 0
-        total_views = books.aggregate(total=Sum('view_count'))['total'] or 0
+        kpi_data = BookAccess.objects.filter(book__in=books_qs).aggregate(
+            total_revenue=Sum(
+                Coalesce(F('book__price'), Value(0)) * NET_PERCENTAGE,
+                output_field=DecimalField()
+            ),
+            total_sales=Count('id'),
+            total_readers=Count('user', distinct=True)
+        )
 
-        # 3. Top Performing Books (Detailed list)
-        top_books = books.values(
-            'id', 'title', 'sales_count', 'view_count', 'price', 'status', 'created_at'
+        total_views = books_qs.aggregate(total=Sum('view_count'))['total'] or 0
+
+        performance_list = books_qs.annotate(
+            actual_sales=Count('readers'),
+            revenue=Coalesce(
+                Sum(
+                    Coalesce(F('price'), Value(0)) * NET_PERCENTAGE,
+                    output_field=DecimalField()
+                ),
+                Decimal('0')
+            )
+        ).order_by('-actual_sales')[:10]
+
+        monthly_trend = BookAccess.objects.filter(
+            book__in=books_qs,
+            granted_at__gte=six_months_ago
         ).annotate(
-            revenue=F('sales_count') * F('price')
-        ).order_by('-sales_count')[:10]
+            month=TruncMonth('granted_at')
+        ).values('month').annotate(
+            revenue=Sum(
+                Coalesce(F('book__price'), Value(0)) * NET_PERCENTAGE,
+                output_field=DecimalField()
+            ),
+            sales=Count('id')
+        ).order_by('month')
 
-        # 4. Monthly Trend (Last 6 Months) - Simplified simulation
-        # In a real production app, you would query an 'Orders' or 'AnalyticsEvent' table.
-        # Since we only have aggregate counters on the Book model, we will mock the *trend* # data structure so the frontend graph works professionally.
-
-        # (Mocking trend data for visualization purposes)
-        today = timezone.now()
-        monthly_data = []
-        for i in range(5, -1, -1):
-            month_date = today - timedelta(days=30 * i)
-            month_name = month_date.strftime("%b")
-            monthly_data.append({
-                "name": month_name,
-                "revenue": total_revenue * (0.1 + (0.1 * i)),  # Fake distribution
-                "views": total_views * (0.1 + (0.15 * i)),
+        graph_data = []
+        for entry in monthly_trend:
+            graph_data.append({
+                "name": entry['month'].strftime("%b"),
+                "revenue": float(entry['revenue'] or 0),
+                "sales": entry['sales']
             })
 
         return Response({
             "kpi": {
-                "total_revenue": total_revenue,
-                "total_sales": total_sales,
+                "total_revenue": float(kpi_data['total_revenue'] or 0),
+                "total_sales": kpi_data['total_sales'],
                 "total_views": total_views,
+                "total_readers": kpi_data['total_readers']
             },
-            "graph_data": monthly_data,
-            "top_books": top_books
+            "top_books": DashboardBookPerformanceSerializer(performance_list, many=True).data,
+            "graph_data": graph_data
         })
 
 
@@ -247,4 +273,89 @@ class BookFiltersView(APIView):
                 "max": 20000
             }
         })
+
+
+class ExportPublisherPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+
+        COMMISSION_RATE = Decimal('0.10')
+        NET_PERCENTAGE = Decimal('1.00') - COMMISSION_RATE
+
+        wallet, _ = Wallet.objects.get_or_create(owner_user=user)
+        books_qs = Book.objects.filter(created_by=user)
+
+        metrics = self._calculate_book_metrics(books_qs, wallet, NET_PERCENTAGE)
+
+        performance_list = books_qs.annotate(
+            actual_sales=Count('readers'),
+            revenue=Coalesce(
+                Sum(
+                    Coalesce(F('price'), Value(0)) * NET_PERCENTAGE,
+                    output_field=DecimalField()
+                ),
+                Decimal('0')
+            )
+        ).order_by('-actual_sales')
+
+        context = {
+            'publisher': user.get_full_name() or user.username,
+            'metrics': metrics,
+            'books': performance_list,
+            'date': now.strftime("%B %d, %Y"),
+        }
+
+        html_string = render_to_string('pdf/publisher_report.html', context)
+
+        html = HTML(string=html_string, base_url=request.build_absolute_uri())
+        pdf_file = html.write_pdf()
+
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        filename = f"Publisher_Report_{now.strftime('%Y%m%d')}.pdf"
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        return response
+
+    def _calculate_book_metrics(self, books_qs, wallet, net_pct):
+        book_revenue = BookAccess.objects.filter(
+            book__in=books_qs
+        ).aggregate(
+            total=Sum(
+                Coalesce(F('book__price'), Value(0)) * net_pct,
+                output_field=DecimalField()
+            )
+        )['total'] or Decimal('0')
+
+        total_readers = BookAccess.objects.filter(book__in=books_qs).values('user').distinct().count()
+        total_views = books_qs.aggregate(total=Sum('view_count'))['total'] or 0
+
+        return {
+            "total_books": books_qs.count(),
+            "published_count": books_qs.filter(status='published').count(),
+            "total_readers": total_readers,
+            "total_views": total_views,
+            "available_balance": float(wallet.balance),
+            "net_book_revenue": float(book_revenue),
+        }
+
+
+class MyLibraryListView(generics.ListAPIView):
+    serializer_class = BookListSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return Book.objects.filter(readers__user=user, status='published').distinct()
+
+class BookReaderDetailView(generics.RetrieveAPIView):
+    serializer_class = BookReaderContentSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'slug'
+
+    def get_queryset(self):
+        user = self.request.user
+        return Book.objects.filter(readers__user=user, status='published')
 

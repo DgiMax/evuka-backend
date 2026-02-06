@@ -13,6 +13,8 @@ from weasyprint import HTML
 from django.utils import timezone
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
+from django.http import FileResponse
+import io
 
 from organizations.models import OrgCategory, OrgLevel, OrgMembership
 from .models import (
@@ -38,7 +40,7 @@ from .serializers import (
     CourseManagementDashboardSerializer, CourseAssignmentAtomicSerializer, PopularCourseMinimalSerializer,
     QuizQuestionLearningSerializer, ExistingAnswerSerializer, AssignmentSubmissionCreateSerializer,
     CourseNoteSerializer, CourseReplySerializer, CourseQuestionSerializer, QuizCreateUpdateSerializer,
-    LessonResourceSerializer
+    LessonResourceSerializer, CertificateVerifySerializer
 )
 from .services import CourseProgressService
 
@@ -552,15 +554,39 @@ class FilterOptionsView(APIView):
         return Response(data)
 
 
-def download_certificate(request, certificate_uid):
-    """Generate and download a course completion certificate as PDF."""
-    certificate = get_object_or_404(Certificate, certificate_uid=certificate_uid)
-    html_string = render_to_string("certificates/template.html", {"certificate": certificate})
-    pdf = HTML(string=html_string).write_pdf()
+class DownloadCertificateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
-    response = HttpResponse(pdf, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="certificate-{certificate.course.slug}.pdf"'
-    return response
+    def get(self, request, certificate_uid):
+        certificate = get_object_or_404(Certificate, certificate_uid=certificate_uid, user=request.user)
+
+        context = {
+            'user': certificate.user,
+            'course': certificate.course,
+            'issue_date': certificate.issue_date,
+            'certificate_uid': str(certificate.certificate_uid),
+        }
+
+        html_string = render_to_string("certificates/certificate.html", context)
+        pdf_content = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+
+        buffer = io.BytesIO(pdf_content)
+        filename = f"certificate-{certificate.course.slug}.pdf"
+
+        return FileResponse(buffer, as_attachment=True, filename=filename, content_type='application/pdf')
+
+
+class VerifyCertificateAPIView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, certificate_uid):
+        certificate = get_object_or_404(Certificate, certificate_uid=certificate_uid)
+        serializer = CertificateVerifySerializer(certificate)
+
+        return Response({
+            "status": "verified",
+            "data": serializer.data
+        }, status=status.HTTP_200_OK)
 
 
 class LessonViewSet(viewsets.GenericViewSet):

@@ -5,7 +5,8 @@ from .views import (
     OrganizationViewSet, OrgMembershipViewSet, GuardianLinkViewSet, OrgTeamViewSet,
     ActiveOrganizationView, OrganizationCreateView,
     PublicOrgLevelListView,
-    check_organization_access, OrganizationTeamView, OrgCategoryViewSet, OrgLevelViewSet, ValidateOrgContextView
+    check_organization_access, OrganizationTeamView, OrgCategoryViewSet, OrgLevelViewSet, ValidateOrgContextView,
+    OrganizationManagementView
 )
 from . import views_finance
 
@@ -25,6 +26,7 @@ urlpatterns = [
     path('check-access/<slug:slug>/', check_organization_access, name="check_organization_access"),
     path('validate-context/<slug:slug>/', ValidateOrgContextView.as_view(), name='validate-org-context'),
     path('org-team/<slug:slug>/', OrganizationTeamView.as_view(), name='org-team-public'),
+    path('<slug:slug>/manage/', OrganizationManagementView.as_view(), name='org-management'),
     path('<slug:slug>/public-levels/', PublicOrgLevelListView.as_view(), name='org-public-levels'),
 
     path('<slug:org_slug>/finance/dashboard/', views_finance.get_tutor_earnings_dashboard, name='tutor-earnings-dashboard'),

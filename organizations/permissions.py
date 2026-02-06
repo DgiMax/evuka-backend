@@ -32,22 +32,30 @@ class IsOrgAdminOrOwner(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
+
+        slug = view.kwargs.get('slug')
+        if slug:
+            return OrgMembership.objects.filter(
+                user=request.user,
+                organization__slug=slug,
+                role__in=['admin', 'owner']
+            ).exists()
+
         org = get_active_org(request)
         if not org:
             return False
         return OrgMembership.objects.filter(
-            user=request.user, organization=org, role__in=['admin', 'owner'], is_active=True
+            user=request.user, organization=org, role__in=['admin', 'owner']
         ).exists()
 
     def has_object_permission(self, request, view, obj):
-        # This is critical for model viewsets operating on specific objects
         if not request.user.is_authenticated:
             return False
 
-        # If the object itself is an organization, check membership directly
         if isinstance(obj, Organization):
-            membership = OrgMembership.objects.filter(user=request.user, organization=obj, is_active=True).first()
-            if not membership: return False
+            membership = OrgMembership.objects.filter(user=request.user, organization=obj).first()
+            if not membership:
+                return False
 
             if request.method == 'DELETE':
                 return membership.role == 'owner'
@@ -59,8 +67,6 @@ class IsOrgAdminOrOwner(permissions.BasePermission):
                 return membership.role in ['owner', 'admin']
 
             return True
-
-        # If object belongs to an org (like a Course or Category), logic is handled in view get_queryset or similar
         return True
 
 

@@ -18,7 +18,7 @@ from .models import (
     CourseReply, LessonResource, Certificate
 )
 from users.models import CreatorProfile
-from books.serializers import BookListSerializer
+from books.serializers import BookListSerializer, BookReaderContentSerializer
 from .services import CourseProgressService
 
 User = get_user_model()
@@ -58,6 +58,7 @@ class LessonResourceSerializer(serializers.ModelSerializer):
     book_id = serializers.UUIDField(write_only=True, required=False)
     book_details = serializers.SerializerMethodField()
     access_status = serializers.SerializerMethodField()
+    file = serializers.SerializerMethodField()
 
     class Meta:
         model = LessonResource
@@ -68,9 +69,23 @@ class LessonResourceSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'book_details', 'access_status', 'course_book')
 
+    def get_file(self, obj):
+        if obj.file:
+            request = self.context.get('request')
+            if request:
+                url = request.build_absolute_uri(obj.file.url)
+            else:
+                url = obj.file.url
+            return url.replace('\\', '/').replace('%5C', '/')
+        return None
+
     def get_book_details(self, obj):
         if obj.resource_type == 'book_ref' and obj.course_book:
-            return BookListSerializer(obj.course_book.book, context=self.context).data
+            # Using the new high-fidelity reader serializer
+            return BookReaderContentSerializer(
+                obj.course_book.book,
+                context=self.context
+            ).data
         return None
 
     def get_access_status(self, obj):
@@ -1159,3 +1174,24 @@ class PopularCourseMinimalSerializer(serializers.ModelSerializer):
             'active_enrollment_count',
         ]
         read_only_fields = fields
+
+
+class CertificateVerifySerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='user.get_full_name')
+    course_title = serializers.CharField(source='course.title')
+    organization_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Certificate
+        fields = [
+            'certificate_uid',
+            'student_name',
+            'course_title',
+            'organization_name',
+            'issue_date'
+        ]
+
+    def get_organization_name(self, obj):
+        if obj.course.organization:
+            return obj.course.organization.name
+        return "Evuka Independent Learning"

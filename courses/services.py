@@ -114,4 +114,13 @@ class CourseProgressService:
                 self._issue_certificate()
 
     def _issue_certificate(self):
-        Certificate.objects.get_or_create(user=self.user, course=self.course)
+        cert, created = Certificate.objects.get_or_create(
+            user=self.user,
+            course=self.course
+        )
+
+        if created:
+            from .utils import generate_and_send_certificate
+            generate_and_send_certificate(cert)
+
+        return cert

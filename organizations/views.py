@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from rest_framework.generics import CreateAPIView
 
+from DVuka_Backend import settings
 from orders.models import Order, OrderItem
 from payments.models import Payment
 from payments.services.paystack import initialize_transaction
@@ -23,7 +24,7 @@ from .serializers import (
     OrganizationSerializer, OrgMembershipSerializer, GuardianLinkSerializer,
     OrgLevelSerializer, OrgCategorySerializer, OrganizationCreateSerializer,
     StudentEnrollmentSerializer, OrganizationListSerializer,
-    OrganizationDetailSerializer, OrgTeamMemberSerializer
+    OrganizationDetailSerializer, OrgTeamMemberSerializer, OrganizationManageSerializer
 )
 
 User = get_user_model()
@@ -152,40 +153,74 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         user = request.user
         membership_id = request.data.get('membership_id')
         payment_method = request.data.get('payment_method')
+
         if not membership_id:
             return Response({"error": "Membership ID required."}, status=400)
+
         try:
-            membership = OrgMembership.objects.get(id=membership_id, user=user, organization=organization,
-                                                   payment_status='pending')
+            membership = OrgMembership.objects.get(
+                id=membership_id,
+                user=user,
+                organization=organization,
+                payment_status='pending'
+            )
         except OrgMembership.DoesNotExist:
             return Response({"error": "Pending membership not found."}, status=404)
+
         price = organization.membership_price
         if price <= 0:
             return Response({"detail": "Membership is free."}, status=400)
+
         order = Order.objects.create(user=user, total_amount=price, status='pending', payment_status='unpaid')
         OrderItem.objects.create(order=order, organization=organization, price=price, quantity=1)
+
         transaction_payment = Payment.objects.create(
-            order=order, user=user, provider="paystack", amount=order.total_amount, currency="KES", status='pending',
+            order=order,
+            user=user,
+            provider="paystack",
+            amount=order.total_amount,
+            currency="KES",
+            status='pending',
             payment_method=payment_method,
-            metadata={'organization_id': organization.id, 'user_id': user.id, 'membership_id': membership.id,
-                      'org_level_id': membership.level.id if membership.level else None}
+            metadata={
+                'organization_id': organization.id,
+                'user_id': user.id,
+                'membership_id': membership.id,
+                'org_level_id': membership.level.id if membership.level else None
+            }
         )
-        response = initialize_transaction(email=user.email, amount=transaction_payment.amount,
-                                          reference=transaction_payment.reference_code, method=payment_method)
+
+        frontend_base_url = settings.FRONTEND_URL.rstrip('/')
+        callback_url = f"{frontend_base_url}/order-confirmation/{transaction_payment.reference_code}"
+
+        response = initialize_transaction(
+            email=user.email,
+            amount=transaction_payment.amount,
+            reference=transaction_payment.reference_code,
+            callback_url=callback_url,
+            method=payment_method
+        )
+
         if response.get("status"):
-            transaction_payment.metadata.update({"authorization_url": response["data"]["authorization_url"],
-                                                 "access_code": response["data"]["access_code"]})
+            transaction_payment.metadata.update({
+                "authorization_url": response["data"]["authorization_url"],
+                "access_code": response["data"]["access_code"]
+            })
             transaction_payment.status = "processing"
             transaction_payment.save()
+
             return Response({
-                "detail": "Redirecting for payment.", "authorization_url": response["data"]["authorization_url"],
-                "reference": transaction_payment.reference_code, "order_id": order.id, "payment_method": payment_method
+                "detail": "Redirecting for payment.",
+                "authorization_url": response["data"]["authorization_url"],
+                "reference": transaction_payment.reference_code,
+                "order_id": order.id,
+                "payment_method": payment_method
             }, status=202)
         else:
             order.status, transaction_payment.status = 'cancelled', 'failed'
             order.save()
             transaction_payment.save()
-            raise Exception(response.get('message', 'Paystack error.'))
+            return Response({"error": response.get('message', 'Paystack error.')}, status=400)
 
 
 class OrgCategoryViewSet(viewsets.ModelViewSet):
@@ -390,3 +425,20 @@ class ValidateOrgContextView(APIView):
             "is_authenticated": True,
             "is_member": True
         }, status=status.HTTP_200_OK)
+
+
+class OrganizationManagementView(generics.RetrieveUpdateAPIView):
+    serializer_class = OrganizationManageSerializer
+    permission_classes = [permissions.IsAuthenticated, IsOrgAdminOrOwner]
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+    lookup_field = 'slug'
+
+    def get_queryset(self):
+        return Organization.objects.all()
+
+    def get_object(self):
+        queryset = self.get_queryset()
+        filter_kwargs = {self.lookup_field: self.kwargs[self.lookup_field]}
+        obj = get_object_or_404(queryset, **filter_kwargs)
+        self.check_object_permissions(self.request, obj)
+        return obj

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="x-apple-disable-message-reformatting">
+    <title>Welcome to Evuka</title>
+    <style>
+        @media screen and (max-width: 600px) {
+            .content-padding { padding: 30px 20px !important; }
+            .col-padding { padding: 0 20px 30px 20px !important; }
+            .logo-padding { padding: 30px 0 10px 0 !important; }
+        }
+    </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f7f9; -webkit-font-smoothing: antialiased;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color: #f4f7f9;">
+        <tr>
+            <td align="center" style="padding: 40px 10px;">
+                <table role="presentation" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.05);" cellspacing="0" cellpadding="0" border="0">
+
+                    <tr>
+                        <td align="center" class="logo-padding" style="padding: 40px 0 20px 0;">
+                            <img src="https://lh3.googleusercontent.com/d/1oRZwmxOAUnhlXG5LudFyVBfIk92Jcnbn" alt="Evuka" width="140" style="display: block; border: none; outline: none;">
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td class="content-padding" style="padding: 0 50px 40px 50px; text-align: center;">
+                            <h1 style="color: #1a1a1a; font-size: 26px; font-weight: 800; margin: 0 0 12px 0; letter-spacing: -0.5px; font-family: sans-serif;">You're verified, {{ user.username }}!</h1>
+                            <p style="color: #64748b; font-size: 16px; line-height: 1.6; margin: 0; font-family: sans-serif;">Your account is ready. Explore your specialized workspaces within the Evuka ecosystem below.</p>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td class="col-padding" style="padding: 0 40px 30px 40px;">
+
+                            {% if user.is_student %}
+                            <table role="presentation" width="100%" style="margin-bottom: 12px; border: 1px solid #eef2f5; border-radius: 16px;" cellspacing="0" cellpadding="20" border="0">
+                                <tr>
+                                    <td style="font-family: sans-serif;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                            <tr>
+                                                <td width="44" valign="top">
+                                                    <div style="background-color: #e0f2fe; color: #0369a1; width: 40px; height: 40px; line-height: 40px; text-align: center; border-radius: 10px; font-size: 18px;">🚀</div>
+                                                </td>
+                                                <td style="padding-left: 15px;">
+                                                    <h3 style="margin: 0 0 4px 0; color: #0f172a; font-size: 16px; font-weight: 700;">Student Hub</h3>
+                                                    <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px; line-height: 1.4;">Access your courses, join homeschool networks, and track your learning progress.</p>
+                                                    <a href="https://e-vuka.com/dashboard" style="color: #3b82f6; text-decoration: none; font-size: 13px; font-weight: 700;">Open Dashboard &rarr;</a>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            {% if user.is_tutor %}
+                            <table role="presentation" width="100%" style="margin-bottom: 12px; border: 1px solid #f3f0ff; border-radius: 16px;" cellspacing="0" cellpadding="20" border="0">
+                                <tr>
+                                    <td style="font-family: sans-serif;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                            <tr>
+                                                <td width="44" valign="top">
+                                                    <div style="background-color: #f3f0ff; color: #6d28d9; width: 40px; height: 40px; line-height: 40px; text-align: center; border-radius: 10px; font-size: 18px;">🎓</div>
+                                                </td>
+                                                <td style="padding-left: 15px;">
+                                                    <h3 style="margin: 0 0 4px 0; color: #0f172a; font-size: 16px; font-weight: 700;">Tutor Center</h3>
+                                                    <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px; line-height: 1.4;">Create curriculums, manage enrollments, and host live workshops.</p>
+                                                    <a href="https://tutors.e-vuka.com" style="color: #8b5cf6; text-decoration: none; font-size: 13px; font-weight: 700;">Launch Portal &rarr;</a>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                            {% if user.is_publisher %}
+                            <table role="presentation" width="100%" style="margin-bottom: 12px; border: 1px solid #fffbeb; border-radius: 16px;" cellspacing="0" cellpadding="20" border="0">
+                                <tr>
+                                    <td style="font-family: sans-serif;">
+                                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                                            <tr>
+                                                <td width="44" valign="top">
+                                                    <div style="background-color: #fffbeb; color: #b45309; width: 40px; height: 40px; line-height: 40px; text-align: center; border-radius: 10px; font-size: 18px;">📚</div>
+                                                </td>
+                                                <td style="padding-left: 15px;">
+                                                    <h3 style="margin: 0 0 4px 0; color: #0f172a; font-size: 16px; font-weight: 700;">Publisher Portal</h3>
+                                                    <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px; line-height: 1.4;">Distribute your books globally and link them to active courses.</p>
+                                                    <a href="https://publishers.e-vuka.com" style="color: #d97706; text-decoration: none; font-size: 13px; font-weight: 700;">Go to Portal &rarr;</a>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                            {% endif %}
+
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td align="center" style="padding: 10px 40px 40px 40px;">
+                            <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                                <tr>
+                                    <td align="center" style="border-radius: 12px; background-color: #5c4b99;">
+                                        <a href="https://e-vuka.com/dashboard" style="padding: 18px 45px; font-size: 16px; font-family: sans-serif; font-weight: 700; color: #ffffff; text-decoration: none; display: inline-block;">Explore My Dashboard</a>
+                                    </td>
+                                </tr>
+                            </table>
+                            <p style="margin: 25px 0 0 0; color: #94a3b8; font-size: 13px; font-family: sans-serif;">
+                                Need help? <a href="https://e-vuka.com/help" style="color: #5c4b99; text-decoration: none; font-weight: 600;">Visit our Help Center</a>
+                            </p>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td style="background-color: #fafbfc; padding: 30px 40px; text-align: center; border-top: 1px solid #f1f5f9;">
+                            <p style="margin: 0; color: #94a3b8; font-size: 12px; font-family: sans-serif; font-weight: 500; line-height: 1.5;">
+                                &copy; 2026 Evuka Learning Ecosystem.<br>
+                                Empowering professionals through digital literacy.<br>
+                                Nairobi, Kenya
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>

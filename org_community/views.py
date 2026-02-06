@@ -20,8 +20,17 @@ from .serializers import (
     AdvancedInvitationSerializer,
     InviteActionSerializer
 )
+from .utils import (
+    notify_admins_of_request,
+    notify_request_approved,
+    notify_rejection,
+    notify_tutor_of_invitation,
+    notify_counter_offer,
+    notify_invitation_accepted
+)
 
 User = get_user_model()
+
 
 class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.AllowAny]
@@ -33,12 +42,15 @@ class OrganizationDiscoveryViewSet(viewsets.ReadOnlyModelViewSet):
     def get_serializer_context(self):
         return {'request': self.request}
 
+
 class RequestToJoinView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = OrgJoinRequestCreateSerializer
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        instance = serializer.save(user=self.request.user)
+        transaction.on_commit(lambda: notify_admins_of_request(instance))
+
 
 class OrgJoinRequestViewSet(viewsets.ModelViewSet):
     serializer_class = OrgJoinRequestSerializer
@@ -97,6 +109,8 @@ class OrgJoinRequestViewSet(viewsets.ModelViewSet):
             organization=req.organization
         ).delete()
 
+        transaction.on_commit(lambda: notify_request_approved(req))
+
         return Response({"status": f"Request approved. User added as {req.desired_role}."})
 
     @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
@@ -107,6 +121,9 @@ class OrgJoinRequestViewSet(viewsets.ModelViewSet):
 
         req.status = 'rejected'
         req.save()
+
+        transaction.on_commit(lambda: notify_rejection(req, request.user.username, is_invitation=False))
+
         return Response({"status": "Request rejected."})
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -116,6 +133,7 @@ class OrgJoinRequestViewSet(viewsets.ModelViewSet):
             return Response({"error": "Not your request."}, status=403)
         req.delete()
         return Response({"status": "Request withdrawn."})
+
 
 class InvitationViewSet(viewsets.ModelViewSet):
     serializer_class = AdvancedInvitationSerializer
@@ -157,12 +175,16 @@ class InvitationViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError({"email": "This user is already a member of the organization."})
 
         if AdvancedOrgInvitation.objects.filter(email=invite_email, organization=active_org).exclude(
-            gov_status__in=['rejected', 'revoked'],
-            tutor_status__in=['rejected', 'revoked']
+                gov_status__in=['rejected', 'revoked'],
+                tutor_status__in=['rejected', 'revoked']
         ).exists():
             raise serializers.ValidationError({"email": "A pending invitation already exists for this email."})
 
-        serializer.save(organization=active_org, invited_by=self.request.user)
+        instance = serializer.save(organization=active_org, invited_by=self.request.user)
+
+        target_user = User.objects.filter(email=instance.email).first()
+        tutor_username = target_user.username if target_user else instance.email
+        transaction.on_commit(lambda: notify_tutor_of_invitation(instance, tutor_username))
 
     @action(detail=True, methods=['post'], permission_classes=[IsOrgAdminOrOwner])
     def revoke(self, request, pk=None):
@@ -204,6 +226,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     )
                 elif act == 'reject':
                     invite.tutor_status = 'rejected'
+                    transaction.on_commit(lambda: notify_rejection(invite, request.user.username, is_invitation=True))
                 elif act == 'counter':
                     new_val = data['counter_value']
                     NegotiationLog.objects.create(
@@ -215,6 +238,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     )
                     invite.tutor_commission = new_val
                     invite.tutor_status = 'negotiating'
+                    transaction.on_commit(lambda: notify_counter_offer(invite, request.user.username))
 
             elif section == 'governance':
                 if act == 'accept':
@@ -229,8 +253,12 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     )
                 elif act == 'reject':
                     invite.gov_status = 'rejected'
+                    transaction.on_commit(lambda: notify_rejection(invite, request.user.username, is_invitation=True))
 
             invite.save()
+
+            if invite.is_fully_resolved and (invite.gov_status == 'accepted' or invite.tutor_status == 'accepted'):
+                transaction.on_commit(lambda: notify_invitation_accepted(invite, request.user.username))
 
             if invite.is_fully_resolved:
                 OrgJoinRequest.objects.filter(

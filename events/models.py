@@ -56,7 +56,7 @@ class Event(models.Model):
 
     location = models.CharField(max_length=255, blank=True)
     meeting_link = models.URLField(blank=True)
-    chat_room_id = models.CharField(max_length=100, unique=True, default=uuid.uuid4)
+    chat_room_id = models.CharField(max_length=100, unique=True, blank=True, null=True)
 
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
@@ -79,6 +79,10 @@ class Event(models.Model):
 
     registration_open = models.BooleanField(default=True)
     registration_deadline = models.DateTimeField(null=True, blank=True)
+
+    mic_locked = models.BooleanField(default=False)
+    camera_locked = models.BooleanField(default=False)
+    screen_locked = models.BooleanField(default=False)
 
     organizer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -265,10 +269,33 @@ class EventRegistration(models.Model):
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding
+        old_payment_status = None
+
+        if not is_new:
+            try:
+                old_instance = EventRegistration.objects.get(pk=self.pk)
+                old_payment_status = old_instance.payment_status
+            except EventRegistration.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)
 
         if is_new and not self.ticket_qr_code:
             self.generate_qr_code()
+            super().save(update_fields=['ticket_qr_code'])
+
+        from .utils import send_event_confirmation_email
+
+        should_send = False
+        if is_new and self.payment_status == 'free':
+            should_send = True
+        elif old_payment_status == 'pending' and self.payment_status == 'paid':
+            should_send = True
+        elif is_new and self.payment_status == 'paid':
+            should_send = True
+
+        if should_send:
+            send_event_confirmation_email(self)
 
     def generate_qr_code(self):
         qr = qrcode.QRCode(
@@ -283,9 +310,10 @@ class EventRegistration(models.Model):
         img = qr.make_image(fill_color="black", back_color="white")
         buffer = BytesIO()
         img.save(buffer, format="PNG")
+        buffer.seek(0)
 
         filename = f"ticket-{self.ticket_id}.png"
-        self.ticket_qr_code.save(filename, ContentFile(buffer.getvalue()), save=True)
+        self.ticket_qr_code.save(filename, ContentFile(buffer.read()), save=False)
 
     def __str__(self):
         return f"{self.user} → {self.event} ({self.status})"

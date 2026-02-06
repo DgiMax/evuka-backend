@@ -1,0 +1,37 @@
+<tr>
+    <td class="content-padding" style="padding: 0 50px 30px 50px; text-align: center;">
+        <h1 style="color: #0f172a; font-size: 24px; font-weight: 800; margin: 0 0 12px 0; letter-spacing: -0.5px;">New Join Request</h1>
+        <p style="color: #64748b; font-size: 15px; line-height: 1.5; margin: 0;">A professional has requested to join <strong>{{ org_name }}</strong>.</p>
+    </td>
+</tr>
+<tr>
+<td class="card-padding" style="padding: 0 40px 25px 40px;">
+    <table role="presentation" width="100%" style="background-color: #fafbfc; border: 1px solid #eef2f5; border-radius: 16px;" cellspacing="0" cellpadding="18" border="0">
+        <tr>
+            <td>
+                <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Applicant</span>
+                <p style="margin: 2px 0 12px 0; color: #1e293b; font-size: 16px; font-weight: 700;">{{ applicant_name }}</p>
+
+                <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Desired Role</span>
+                <p style="margin: 2px 0 12px 0; color: #1e293b; font-size: 14px; font-weight: 600;">{{ desired_role|title }}</p>
+
+                {% if message %}
+                <span style="color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">Intro Message</span>
+                <p style="margin: 2px 0 0 0; color: #64748b; font-size: 13px; font-style: italic;">"{{ message }}"</p>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+</td>
+</tr>
+<tr>
+<td align="center" style="padding: 0 40px 45px 40px; text-align: center;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
+        <tr>
+            <td align="center" style="border-radius: 12px; background-color: #0f172a;">
+                <a href="{{ manage_url }}" style="padding: 16px 35px; font-size: 15px; font-weight: 700; color: #ffffff; text-decoration: none; display: inline-block;">Manage Requests</a>
+            </td>
+        </tr>
+    </table>
+</td>
+</tr>

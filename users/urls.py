@@ -17,7 +17,8 @@ from .views import (
     CreatorProfileManageView,
     StudentProfileManageView, TutorDashboardView, TutorAnalyticsView,
     PublicTutorViewSet, GetWebSocketTokenView, NewsletterSubscribeView, GoogleLoginView, PublicTutorProfileView,
-    PayoutMethodView, SearchInstructorsView, PublicPublisherProfileView,
+    PayoutMethodView, SearchInstructorsView, PublicPublisherProfileView, PublisherDashboardView, ExportTutorPDFView,
+    StudentLiveLessonsAPIView,
 )
 
 app_name = "users"
@@ -48,12 +49,14 @@ urlpatterns = [
     path('profile/student/', StudentProfileManageView.as_view(), name='manage-student-profile'),
     path('profile/publisher/', PublisherProfileManageView.as_view(), name='publisher-profile'),
     path('publisher/<str:username>/', PublicPublisherProfileView.as_view(), name='public-publisher-profile'),
-
+    path('student/live-sessions/', StudentLiveLessonsAPIView.as_view(), name='student-live-sessions'),
     path('dashboard/tutor/', TutorDashboardView.as_view(), name='tutor-dashboard'),
+    path('dashboard/publisher/', PublisherDashboardView.as_view(), name='publisher-dashboard'),
     path('instructors/search/', SearchInstructorsView.as_view(), name='search-instructors'),
     path('dashboard/analytics/', TutorAnalyticsView.as_view(), name='tutor-analytics'),
     path('ws-token/', GetWebSocketTokenView.as_view(), name='get_ws_token'),
     path('auth/google/', GoogleLoginView.as_view(), name='google-login'),
+    path('tutors-export-pdf/', ExportTutorPDFView.as_view(), name='tutors-export-pdf'),
     path('tutor/<str:username>/', PublicTutorProfileView.as_view(), name='public-tutor-profile'),
     path('payout-method/', PayoutMethodView.as_view(), name='payout-method'),
 

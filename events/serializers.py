@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 
 from rest_framework import serializers
@@ -120,13 +121,16 @@ class EventListSerializer(EventMixin, serializers.ModelSerializer):
             "banner_image",
             "course_title",
             "computed_status",
+            "meeting_link",
+            "chat_room_id",
             "event_type",
             "price",
             "currency",
             "is_paid",
             "is_registered",
             "is_full",
-            "location"
+            "location",
+            "mic_locked", "camera_locked", "screen_locked"
         ]
 
 
@@ -158,9 +162,11 @@ class EventSerializer(EventMixin, serializers.ModelSerializer):
             "computed_status",
             "location",
             "meeting_link",
+            'chat_room_id',
             "start_time",
             "end_time",
             "timezone",
+            "mic_locked", "camera_locked", "screen_locked",
             "who_can_join",
             "banner_image",
             "is_paid",
@@ -366,6 +372,8 @@ class TutorEventDetailSerializer(serializers.ModelSerializer):
             "computed_status",
             "location",
             "meeting_link",
+            "chat_room_id",
+            "mic_locked", "camera_locked", "screen_locked",
             "start_time",
             "end_time",
             "timezone",
@@ -399,7 +407,10 @@ class TutorEventDetailSerializer(serializers.ModelSerializer):
 
 class EventRegistrationSerializer(serializers.ModelSerializer):
     user = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    user_name = serializers.CharField(source="user.get_full_name", read_only=True)
+    user_email = serializers.EmailField(source="user.email", read_only=True)
     event_title = serializers.CharField(source="event.title", read_only=True)
+    ticket_id = serializers.CharField(read_only=True)
 
     class Meta:
         model = EventRegistration
@@ -408,13 +419,17 @@ class EventRegistrationSerializer(serializers.ModelSerializer):
             "event",
             "event_title",
             "user",
+            "user_name",
+            "user_email",
             "status",
             "payment_status",
             "payment_reference",
+            "ticket_id",
+            "checked_in_at",
             "registered_at",
             "updated_at",
         ]
-        read_only_fields = ["status", "payment_status", "payment_reference"]
+        read_only_fields = ["status", "payment_status", "payment_reference", "ticket_id", "checked_in_at"]
 
     def create(self, validated_data):
         event = validated_data["event"]

@@ -3,13 +3,14 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
-from DVuka_Backend.views import unified_search_api
+from DVuka_Backend.views import UnifiedSearchView, CartValidationView
 from events.views import BestUpcomingEventView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("users/", include("users.urls")),
-    path('api/v1/search/', unified_search_api, name='unified_search'),
+    path('api/v1/search/', UnifiedSearchView.as_view(), name='unified_search'),
+    path('api/v1/cart/validate/', CartValidationView.as_view(), name='cart_validation'),
     path("organizations/", include("organizations.urls")),
     path("", include("courses.urls")),
     path("events/", include("events.urls")),
@@ -23,7 +24,7 @@ urlpatterns = [
     path('community/', include('org_community.urls')),
     path("ai/", include("ai_assistant.urls")),
     path('notifications/', include('notifications.urls')),
-    path('help_center/', include('help_center.urls')),
+    path('help-center/', include('help_center.urls')),
     path('books/', include('books.urls')),
     path('core/', include('core.urls')),
     path(

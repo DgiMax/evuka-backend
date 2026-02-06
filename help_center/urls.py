@@ -1,7 +1,11 @@
 from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import HelpCategoryViewSet, HelpArticleViewSet
 
-from help_center.views import HelpCenterView
+router = DefaultRouter()
+router.register(r'categories', HelpCategoryViewSet, basename='help-category')
+router.register(r'articles', HelpArticleViewSet, basename='help-article')
 
 urlpatterns = [
-    path('', HelpCenterView.as_view(), name='help-center'),
+    path('', include(router.urls)),
 ]

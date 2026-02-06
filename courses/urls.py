@@ -1,11 +1,11 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    CourseViewSet, FilterOptionsView, download_certificate,
+    CourseViewSet, FilterOptionsView,
     LessonViewSet, CourseFormOptionsView, TutorCourseViewSet,
     CoursePreviewView, CourseDetailsPreviewView, QuizAttemptViewSet,
     CourseManagerViewSet, AssignmentSubmissionViewSet, CourseNoteViewSet,
-    CourseDiscussionViewSet, CourseSearchAPIView
+    CourseDiscussionViewSet, CourseSearchAPIView, DownloadCertificateAPIView, VerifyCertificateAPIView
 )
 
 router = DefaultRouter()
@@ -22,7 +22,10 @@ router.register(r'manage-course', CourseManagerViewSet, basename='manage-course'
 
 urlpatterns = [
     path('filters/', FilterOptionsView.as_view(), name='course-filter-options'),
-    path('certificates/<uuid:certificate_uid>/download/', download_certificate, name='download_certificate'),
+    path('courses/certificates/verify/<uuid:certificate_uid>/', VerifyCertificateAPIView.as_view(),
+         name='api-verify-certificate'),
+    path('courses/certificates/download/<uuid:certificate_uid>/', DownloadCertificateAPIView.as_view(),
+         name='api-download-certificate'),
     path('courses/form-options/', CourseFormOptionsView.as_view(), name='course-form-options'),
     path('courses/search-selector/', CourseSearchAPIView.as_view(), name='course-search-selector'),
 

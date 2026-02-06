@@ -192,10 +192,11 @@ class DashboardCourseSerializer(serializers.ModelSerializer):
 
 class ProfileCertificateSerializer(serializers.ModelSerializer):
     course_title = serializers.CharField(source='course.title', read_only=True)
+    organization_name = serializers.CharField(source='course.organization.name', read_only=True, default="Evuka")
 
     class Meta:
         model = Certificate
-        fields = ['id', 'course_title', 'issue_date', 'certificate_uid']
+        fields = ['certificate_uid', 'course_title', 'organization_name', 'issue_date']
 
 
 class ProfileOrgMembershipSerializer(serializers.ModelSerializer):

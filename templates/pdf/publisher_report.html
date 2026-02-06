@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Publisher Analytics Report</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            color: #1e293b;
+            line-height: 1.5;
+            margin: 0;
+            padding: 0;
+        }
+        .header {
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #0f172a;
+        }
+        .header p {
+            margin: 5px 0 0;
+            color: #64748b;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .metrics-grid {
+            display: table;
+            width: 100%;
+            margin-bottom: 40px;
+            border-spacing: 10px;
+        }
+        .metric-card {
+            display: table-cell;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 15px;
+            text-align: center;
+            width: 25%;
+        }
+        .metric-label {
+            display: block;
+            font-size: 10px;
+            font-weight: bold;
+            color: #64748b;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .metric-value {
+            display: block;
+            font-size: 18px;
+            font-weight: bold;
+            color: #0f172a;
+        }
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 15px;
+            border-left: 4px solid #3b82f6;
+            padding-left: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 30px;
+        }
+        th {
+            background: #f1f5f9;
+            text-align: left;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #475569;
+            padding: 12px 10px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        td {
+            padding: 12px 10px;
+            font-size: 12px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .revenue-cell {
+            font-weight: bold;
+            color: #059669;
+        }
+        .footer {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            text-align: center;
+            font-size: 10px;
+            color: #94a3b8;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Publisher Performance Report</h1>
+        <p>Generated for {{ publisher }} • {{ date }}</p>
+    </div>
+
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <span class="metric-label">Net Royalties</span>
+            <span class="metric-value">KES {{ metrics.net_book_revenue|floatformat:0 }}</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Total Readers</span>
+            <span class="metric-value">{{ metrics.total_readers }}</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Published</span>
+            <span class="metric-value">{{ metrics.published_count }}</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Total Views</span>
+            <span class="metric-value">{{ metrics.total_views }}</span>
+        </div>
+    </div>
+
+    <div class="section-title">Manuscript Catalog Performance</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Book Title</th>
+                <th class="text-center">Status</th>
+                <th class="text-center">Sales</th>
+                <th class="text-center">Views</th>
+                <th class="text-right">Net Revenue</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for book in books %}
+            <tr>
+                <td>{{ book.title }}</td>
+                <td class="text-center">{{ book.status|capfirst }}</td>
+                <td class="text-center">{{ book.actual_sales }}</td>
+                <td class="text-center">{{ book.view_count }}</td>
+                <td class="text-right revenue-cell">KES {{ book.revenue|floatformat:0 }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="5" class="text-center">No books found in catalog.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        This is an automated performance report. All figures are net of platform commissions.
+    </div>
+</body>
+</html>

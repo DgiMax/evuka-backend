@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta
 from django.db import transaction
 from django.db.models import Q
@@ -7,6 +8,7 @@ from django.conf import settings
 from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from asgiref.sync import async_to_sync
 from rest_framework.parsers import MultiPartParser, FormParser
 from livekit import api
 
@@ -22,9 +24,9 @@ from .serializers import (
 )
 from .services import LiveClassScheduler
 
-LK_API_KEY = "devkey"
-LK_API_SECRET = "SecureLiveKitSecretKey2026EvukaProject"
-LK_SERVER_URL = "ws://127.0.0.1:7880"
+LK_API_KEY = os.getenv("LK_API_KEY")
+LK_API_SECRET = os.getenv("LK_API_SECRET")
+LK_SERVER_URL = os.getenv("LK_SERVER_URL")
 
 
 class LiveClassManagementViewSet(viewsets.ModelViewSet):
@@ -119,6 +121,7 @@ class LiveHubViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class LiveLessonViewSet(
+    mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
     mixins.UpdateModelMixin,
     mixins.ListModelMixin,
@@ -131,23 +134,23 @@ class LiveLessonViewSet(
     def get_queryset(self):
         user = self.request.user
         active_org = getattr(self.request, "active_organization", None)
-        is_tutor_or_admin = IsTutorOrOrgAdmin().has_permission(self.request, self)
+        qs = LiveLesson.objects.select_related("live_class", "live_class__organization")
+        qs = qs.filter(live_class__course__status="published")
 
-        if is_tutor_or_admin:
-            qs = LiveLesson.objects.select_related("live_class", "live_class__organization").filter(
-                live_class__course__status="published")
-            if active_org:
-                membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
-                if not membership:
-                    return qs.none()
-                if membership.role in ["admin", "owner"]:
-                    return qs.filter(live_class__organization=active_org)
-                return qs.filter(live_class__organization=active_org, live_class__creator=user)
-            return qs.filter(live_class__creator=user, live_class__organization__isnull=True)
+        is_instructor_filter = Q(live_class__creator=user) | Q(live_class__course__instructors__in=[user])
+        is_org_admin_filter = Q()
+        if active_org:
+            membership = OrgMembership.objects.filter(user=user, organization=active_org).first()
+            if membership and membership.role in ["admin", "owner"]:
+                is_org_admin_filter = Q(live_class__organization=active_org)
 
-        enrolled_course_ids = Enrollment.objects.filter(user=user, status="active",
-                                                        course__status="published").values_list("course_id", flat=True)
-        qs = LiveLesson.objects.filter(live_class__course_id__in=enrolled_course_ids)
+        enrolled_course_ids = Enrollment.objects.filter(
+            user=user,
+            status__in=["active", "completed"]
+        ).values_list("course_id", flat=True)
+        is_student_filter = Q(live_class__course_id__in=enrolled_course_ids)
+
+        qs = qs.filter(is_instructor_filter | is_org_admin_filter | is_student_filter).distinct()
         if active_org:
             return qs.filter(live_class__organization=active_org)
         return qs.filter(live_class__organization__isnull=True)
@@ -156,7 +159,8 @@ class LiveLessonViewSet(
     def join(self, request, pk=None):
         lesson = self.get_object()
         user = request.user
-        is_host = (user == lesson.live_class.creator)
+        is_host = (user == lesson.live_class.creator or
+                   lesson.live_class.course.instructors.filter(id=user.id).exists())
 
         if not is_host:
             now = timezone.now()
@@ -169,14 +173,19 @@ class LiveLessonViewSet(
                     "open_at": buffer_start
                 }, status=status.HTTP_403_FORBIDDEN)
 
+            # Trace Attendance: Add student to the attendees list upon successful join request
+            if not lesson.attendees.filter(id=user.id).exists():
+                lesson.attendees.add(user)
+
         participant_identity = str(user.id)
         participant_name = user.get_full_name() or user.username
-        room_name = lesson.chat_room_id
+        room_name = str(lesson.chat_room_id)
         host_identity = str(lesson.live_class.creator.id)
 
         metadata = json.dumps({
             "mic_locked": lesson.is_mic_locked,
             "camera_locked": lesson.is_camera_locked,
+            "screen_locked": getattr(lesson, 'is_screen_locked', False),
             "is_host": is_host
         })
 
@@ -197,28 +206,19 @@ class LiveLessonViewSet(
             "url": LK_SERVER_URL,
             "is_host": is_host,
             "host_identity": host_identity,
+            "course_slug": lesson.live_class.course.slug,
             "effective_end_datetime": lesson.effective_end_datetime,
-            "resources": LessonResourceSerializer(lesson.resources.all(), many=True).data
+            "resources": LessonResourceSerializer(lesson.resources.all(), many=True).data,
+            "mic_locked": lesson.is_mic_locked,
+            "camera_locked": lesson.is_camera_locked,
+            "screen_locked": getattr(lesson, 'is_screen_locked', False)
         })
-
-    @action(detail=True, methods=["post"])
-    def extend_time(self, request, pk=None):
-        lesson = self.get_object()
-        if request.user != lesson.live_class.creator:
-            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
-
-        add_minutes = int(request.data.get("minutes", 15))
-        if lesson.extension_minutes + add_minutes > 60:
-            return Response({"error": "Limit reached"}, status=status.HTTP_400_BAD_REQUEST)
-
-        lesson.extension_minutes += add_minutes
-        lesson.save()
-        return Response({"new_end_time": lesson.effective_end_datetime})
 
     @action(detail=True, methods=["post"])
     def toggle_lock(self, request, pk=None):
         lesson = self.get_object()
-        if request.user != lesson.live_class.creator:
+        if request.user != lesson.live_class.creator and not lesson.live_class.course.instructors.filter(
+                id=request.user.id).exists():
             return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         target, state = request.data.get("target"), request.data.get("locked")
@@ -226,27 +226,153 @@ class LiveLessonViewSet(
             lesson.is_mic_locked = state
         elif target == 'camera':
             lesson.is_camera_locked = state
+        elif target == 'screen':
+            lesson.is_screen_locked = state
         lesson.save()
 
-        try:
+        room_id = str(lesson.chat_room_id)
+
+        async def lk_sync():
             lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
-            lkapi.room.update_room_metadata(lesson.chat_room_id, metadata=json.dumps({
-                "mic_locked": lesson.is_mic_locked, "camera_locked": lesson.is_camera_locked
-            }))
+            try:
+                payload_dict = {
+                    "mic_locked": lesson.is_mic_locked,
+                    "camera_locked": lesson.is_camera_locked,
+                    "screen_locked": getattr(lesson, 'is_screen_locked', False)
+                }
+                metadata_str = json.dumps(payload_dict)
+
+                await lkapi.room.update_room_metadata(api.UpdateRoomMetadataRequest(
+                    room=room_id,
+                    metadata=metadata_str
+                ))
+
+                signal_content = json.dumps({
+                    "type": "PERMISSION_UPDATE",
+                    **payload_dict
+                })
+
+                await lkapi.room.send_data(api.SendDataRequest(
+                    room=room_id,
+                    data=signal_content.encode(),
+                    kind=api.DataPacket.RELIABLE
+                ))
+            finally:
+                await lkapi.aclose()
+
+        try:
+            async_to_sync(lk_sync)()
         except:
             pass
-        return Response({"status": "updated"})
+
+        return Response({
+            "status": "updated",
+            "mic_locked": lesson.is_mic_locked,
+            "camera_locked": lesson.is_camera_locked,
+            "screen_locked": getattr(lesson, 'is_screen_locked', False)
+        })
+
+    @action(detail=True, methods=["post"])
+    def acknowledge_student(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator and not lesson.live_class.course.instructors.filter(
+                id=request.user.id).exists():
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        student_identity = request.data.get("student_identity")
+        action_type = request.data.get("action") # 'grant' or 'revoke'
+
+        async def lk_acknowledge():
+            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+            try:
+                signal_type = "CLEAR_HANDS" if action_type == 'revoke' else "TUTOR_ACKNOWLEDGE"
+                payload = json.dumps({
+                    "type": signal_type,
+                    "mic_locked": lesson.is_mic_locked if action_type == 'revoke' else False,
+                    "camera_locked": lesson.is_camera_locked if action_type == 'revoke' else False,
+                    "screen_locked": getattr(lesson, 'is_screen_locked', False) if action_type == 'revoke' else False,
+                })
+                await lkapi.room.send_data(api.SendDataRequest(
+                    room=str(lesson.chat_room_id),
+                    data=payload.encode(),
+                    kind=api.DataPacket.RELIABLE,
+                    destination_identities=[student_identity]
+                ))
+            finally:
+                await lkapi.aclose()
+
+        try:
+            async_to_sync(lk_acknowledge)()
+        except:
+            pass
+
+        return Response({"status": "acknowledged"})
+
+    @action(detail=True, methods=["post"])
+    def extend_time(self, request, pk=None):
+        lesson = self.get_object()
+        if request.user != lesson.live_class.creator and not lesson.live_class.course.instructors.filter(
+                id=request.user.id).exists():
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        add_minutes = int(request.data.get("minutes", 15))
+        lesson.extension_minutes += add_minutes
+        lesson.save()
+
+        async def lk_extend():
+            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+            try:
+                payload = json.dumps({
+                    "type": "TIME_EXTENDED",
+                    "new_end_time": lesson.effective_end_datetime.isoformat(),
+                    "minutes": add_minutes
+                })
+                await lkapi.room.send_data(api.SendDataRequest(
+                    room=str(lesson.chat_room_id),
+                    data=payload.encode(),
+                    kind=api.DataPacket.RELIABLE
+                ))
+            finally:
+                await lkapi.aclose()
+
+        try:
+            async_to_sync(lk_extend)()
+        except:
+            pass
+
+        return Response({"new_end_time": lesson.effective_end_datetime})
 
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def upload_resource(self, request, pk=None):
         lesson = self.get_object()
-        if request.user != lesson.live_class.creator:
+        if request.user != lesson.live_class.creator and not lesson.live_class.course.instructors.filter(
+                id=request.user.id).exists():
             return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
         file = request.FILES.get('file')
         if not file: return Response({"error": "No file"}, status=status.HTTP_400_BAD_REQUEST)
+
         resource = LessonResource.objects.create(lesson=lesson, file=file, title=request.data.get('title', file.name))
-        return Response(LessonResourceSerializer(resource).data)
+        resource_data = LessonResourceSerializer(resource).data
+
+        async def lk_resource():
+            lkapi = api.LiveKitAPI(LK_SERVER_URL, LK_API_KEY, LK_API_SECRET)
+            try:
+                payload = json.dumps({"type": "RESOURCE_ADDED", "resource": resource_data})
+                await lkapi.room.send_data(api.SendDataRequest(
+                    room=str(lesson.chat_room_id),
+                    data=payload.encode(),
+                    kind=api.DataPacket.RELIABLE
+                ))
+            finally:
+                await lkapi.aclose()
+
+        try:
+            async_to_sync(lk_resource)()
+        except:
+            pass
+
+        return Response(resource_data)
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
@@ -256,3 +382,5 @@ class LiveLessonViewSet(
         lesson.is_cancelled = True
         lesson.save()
         return Response({"status": "cancelled"})
+
+

@@ -8,6 +8,7 @@ from users.models import CreatorProfile
 from .models import Organization, OrgMembership, GuardianLink, OrgLevel, OrgCategory
 from .models_finance import TutorAgreement
 from .constants import MIN_TUTOR_SHARE_PERCENT
+from django.db import transaction
 
 User = get_user_model()
 
@@ -113,7 +114,7 @@ class OrganizationDetailSerializer(serializers.ModelSerializer):
             'membership_price', 'membership_period', 'membership_duration_value',
             'payout_frequency', 'payout_anchor_day', 'auto_distribute'
         ]
-        read_only_fields = ['slug', 'approved', 'created_at', 'updated_at', 'branding', 'policies']
+        read_only_fields = ['approved', 'created_at', 'updated_at', 'branding', 'policies']
 
     def get_logo(self, obj):
         if obj.logo:
@@ -372,3 +373,94 @@ class OrgTeamMemberSerializer(serializers.ModelSerializer):
         if hasattr(obj.user, 'creator_profile'):
             return TeamMemberProfileSerializer(obj.user.creator_profile, context=self.context).data
         return None
+
+
+class OrganizationManageSerializer(serializers.ModelSerializer):
+    branding = FormDataJSONField(required=False)
+    policies = FormDataJSONField(required=False)
+    logo = serializers.ImageField(required=False, allow_null=True)
+
+    levels = FormDataJSONField(required=False, write_only=True)
+    categories = FormDataJSONField(required=False, write_only=True)
+
+    founder_commission_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2,
+        min_value=40, max_value=100,
+        required=False
+    )
+
+    class Meta:
+        model = Organization
+        fields = [
+            'name', 'org_type', 'description', 'logo', 'slug', 'status',
+            'membership_price', 'membership_period', 'membership_duration_value',
+            'branding', 'policies', 'payout_frequency', 'payout_anchor_day',
+            'auto_distribute', 'levels', 'categories', 'founder_commission_percent'
+        ]
+
+    def validate(self, data):
+        status = data.get('status', self.instance.status if self.instance else 'draft')
+
+        if status == 'pending_approval':
+            errors = {}
+
+            if not data.get('name', self.instance.name):
+                errors["name"] = "Organization name is required."
+            if not data.get('org_type', self.instance.org_type):
+                errors["org_type"] = "Organization type is required."
+            desc = data.get('description', self.instance.description)
+            if not desc or len(desc) < 10:
+                errors["description"] = "A detailed description (min 10 chars) is required for approval."
+
+            period = data.get('membership_period', self.instance.membership_period)
+            price = data.get('membership_price', self.instance.membership_price)
+            if period != 'free' and (price is None or price <= 0):
+                errors["membership_price"] = "Price must be greater than 0 for paid memberships."
+
+            policies = data.get('policies', self.instance.policies)
+            required_policies = ['terms_of_service', 'privacy_policy', 'refund_policy']
+            for p in required_policies:
+                if not policies.get(p):
+                    errors["policies"] = f"All legal policies ({', '.join(required_policies)}) must be defined."
+
+            comm = data.get('founder_commission_percent')
+            if comm is None:
+                from .models_finance import TutorAgreement
+                if not TutorAgreement.objects.filter(organization=self.instance,
+                                                     user=self.context['request'].user).exists():
+                    errors["founder_commission_percent"] = "Founder commission must be set."
+
+            if errors:
+                raise serializers.ValidationError(errors)
+
+        return data
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        levels_data = validated_data.pop('levels', None)
+        categories_data = validated_data.pop('categories', None)
+        founder_comm = validated_data.pop('founder_commission_percent', None)
+
+        instance = super().update(instance, validated_data)
+
+        if levels_data is not None:
+            instance.levels.all().delete()
+            OrgLevel.objects.bulk_create(
+                [OrgLevel(organization=instance, **item) for item in levels_data]
+            )
+
+        if categories_data is not None:
+            instance.categories.all().delete()
+            OrgCategory.objects.bulk_create(
+                [OrgCategory(organization=instance, **item) for item in categories_data]
+            )
+
+        if founder_comm is not None:
+            from .models_finance import TutorAgreement
+            TutorAgreement.objects.update_or_create(
+                organization=instance,
+                user=self.context['request'].user,
+                defaults={'commission_percent': founder_comm, 'is_active': True, 'signed_by_user': True}
+            )
+
+        return instance
