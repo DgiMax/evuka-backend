@@ -24,7 +24,7 @@ class RefundRequestSerializer(serializers.Serializer):
         max_digits=10,
         decimal_places=2,
         required=False,
-        min_value=1.00
+        min_value=1
     )
     reason = serializers.CharField(
         required=False,

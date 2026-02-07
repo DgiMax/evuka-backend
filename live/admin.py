@@ -3,15 +3,12 @@ from django.utils import timezone
 from django.utils.html import format_html
 from django.contrib import messages
 from .models import LiveClass, LiveLesson, LessonResource
-from .services import LiveClassScheduler  # Ensure you import your service
-
 
 class LessonResourceInline(admin.TabularInline):
     model = LessonResource
     extra = 1
     fields = ('title', 'file', 'uploaded_at')
     readonly_fields = ('uploaded_at',)
-
 
 class LiveLessonInline(admin.TabularInline):
     model = LiveLesson
@@ -20,52 +17,51 @@ class LiveLessonInline(admin.TabularInline):
     fields = ('title', 'start_datetime', 'end_datetime', 'is_cancelled', 'status_badge')
     readonly_fields = ('status_badge',)
     ordering = ('start_datetime',)
-    can_delete = False  # Prevent accidental deletion from parent view
+    can_delete = False
 
     def status_badge(self, obj):
         color_map = {
-            "live": "green",
-            "upcoming": "blue",
-            "completed": "gray",
-            "cancelled": "red"
+            "live": "#27ae60",
+            "upcoming": "#2980b9",
+            "completed": "#7f8c8d",
+            "cancelled": "#c0392b"
         }
-        color = color_map.get(obj.status, "black")
         return format_html(
-            '<span style="color: white; background-color: {}; padding: 3px 8px; border-radius: 10px; font-size: 10px;">{}</span>',
-            color, obj.status.upper()
+            '<span style="color: white; background-color: {}; padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: bold;">{}</span>',
+            color_map.get(obj.status, "#000"),
+            obj.status.upper()
         )
-
     status_badge.short_description = "Status"
 
     def get_queryset(self, request):
-        # Only show future or recent lessons to keep the interface clean
-        qs = super().get_queryset(request)
-        cutoff = timezone.now() - timezone.timedelta(days=7)
-        return qs.filter(start_datetime__gte=cutoff)
-
+        return super().get_queryset(request).select_related('live_class')
 
 @admin.register(LiveClass)
 class LiveClassAdmin(admin.ModelAdmin):
     list_display = (
         'title',
-        'course_link',
+        'status_pill',
+        'course',
         'recurrence_type',
-        'timezone_info',
         'next_lesson_preview',
-        'status_pill'
+        'created_at'
     )
     list_filter = ('status', 'recurrence_type', 'timezone', 'created_at')
     search_fields = ('title', 'course__title', 'creator__username', 'creator__email')
+    autocomplete_fields = ["course", "creator", "organization", "creator_profile"]
+    readonly_fields = ("slug", "created_at", "updated_at")
     inlines = [LiveLessonInline]
+    save_on_top = True
 
     fieldsets = (
         ("General Info", {
-            "fields": ("title", "description", "slug", "status")
+            "fields": ("title", "description", ("status", "slug"))
         }),
-        ("Context", {
-            "fields": ("course", "organization", "creator", "creator_profile")
+        ("Context & Ownership", {
+            "fields": (("course", "organization"), ("creator", "creator_profile"))
         }),
         ("Scheduling Configuration", {
+            "description": "Configuration for recurring or one-time sessions.",
             "fields": (
                 "timezone",
                 "recurrence_type",
@@ -73,63 +69,31 @@ class LiveClassAdmin(admin.ModelAdmin):
                 "single_session_start",
                 "duration_minutes"
             ),
-            "description": "Changing these settings will trigger a regeneration of future lessons."
         }),
         ("Validity Period", {
-            "fields": ("start_date", "end_date")
+            "fields": (("start_date", "end_date"),)
         }),
-        ("Permissions", {
-            "fields": ("requires_auth", "allow_student_access")
+        ("Access Controls", {
+            "fields": (("requires_auth", "allow_student_access"),)
+        }),
+        ("System Metadata", {
+            "classes": ("collapse",),
+            "fields": ("created_at", "updated_at")
         }),
     )
 
-    readonly_fields = ("slug",)
-    autocomplete_fields = ["course", "creator"]  # Assumes these are registered in Admin
-
-    def save_model(self, request, obj, form, change):
-        """
-        Overriding save to ensure the Schedule Service runs even when
-        edited by an Admin.
-        """
-        super().save_model(request, obj, form, change)
-
-        # Trigger the service to sync lessons
-        try:
-            scheduler = LiveClassScheduler(obj)
-            if change:
-                scheduler.update_schedule()
-                messages.info(request, f"Schedule updated and future lessons regenerated for '{obj.title}'.")
-            else:
-                scheduler.schedule_lessons(months_ahead=3)
-                messages.success(request, f"Live Class created and initial lessons generated for '{obj.title}'.")
-        except Exception as e:
-            messages.warning(request, f"Class saved, but lesson generation failed: {e}")
-
-    # --- Custom Column Methods ---
-
-    def course_link(self, obj):
-        return obj.course.title
-
-    course_link.short_description = "Course"
-
-    def timezone_info(self, obj):
-        return f"{obj.timezone}"
-
-    timezone_info.short_description = "Region/TZ"
-
     def status_pill(self, obj):
         colors = {
-            "draft": "#f39c12",
-            "scheduled": "#3498db",
-            "completed": "#95a5a6",
-            "archived": "#7f8c8d"
+            "draft": "#7f8c8d",
+            "scheduled": "#2980b9",
+            "completed": "#27ae60",
+            "archived": "#c0392b"
         }
         return format_html(
-            '<span style="color: white; background-color: {}; padding: 5px 10px; border-radius: 15px; font-weight: bold;">{}</span>',
+            '<span style="color: white; background-color: {}; padding: 4px 10px; border-radius: 15px; font-weight: bold; font-size: 11px;">{}</span>',
             colors.get(obj.status, "#333"),
             obj.get_status_display()
         )
-
     status_pill.short_description = "Status"
 
     def next_lesson_preview(self, obj):
@@ -137,13 +101,29 @@ class LiveClassAdmin(admin.ModelAdmin):
             start_datetime__gte=timezone.now(),
             is_cancelled=False
         ).order_by('start_datetime').first()
-
         if next_lesson:
-            return next_lesson.start_datetime.strftime("%Y-%m-%d %H:%M UTC")
+            return next_lesson.start_datetime.strftime("%Y-%m-%d %H:%M")
         return "-"
-
     next_lesson_preview.short_description = "Next Session"
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('course', 'creator')
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        try:
+            from .services import LiveClassScheduler
+            scheduler = LiveClassScheduler(obj)
+            if change:
+                scheduler.update_schedule()
+                messages.info(request, "Schedule synchronized successfully.")
+            else:
+                scheduler.schedule_lessons(months_ahead=3)
+                messages.success(request, "Initial sessions generated.")
+        except ImportError:
+            pass
+        except Exception as e:
+            messages.warning(request, f"Lesson generation error: {e}")
 
 @admin.register(LiveLesson)
 class LiveLessonAdmin(admin.ModelAdmin):
@@ -151,74 +131,64 @@ class LiveLessonAdmin(admin.ModelAdmin):
         'title',
         'live_class',
         'start_datetime',
-        'duration_display',
         'is_cancelled',
-        'status_display',
+        'status_badge',
         'lock_status'
     )
-    list_filter = (
-        'is_cancelled',
-        'start_datetime',
-        'live_class__timezone',
-        'is_mic_locked'
-    )
+    list_filter = ('is_cancelled', 'is_mic_locked', 'is_camera_locked', 'start_datetime')
     search_fields = ('title', 'live_class__title', 'chat_room_id')
-    date_hierarchy = 'start_datetime'
+    autocomplete_fields = ('live_class',)
+    readonly_fields = ("chat_room_id", "created_at", "updated_at")
     inlines = [LessonResourceInline]
+    date_hierarchy = 'start_datetime'
 
-    actions = ['cancel_lessons', 'activate_lessons', 'unlock_all_controls']
+    actions = ['cancel_selected', 'activate_selected', 'reset_locks']
 
     fieldsets = (
-        ("Lesson Details", {
-            "fields": ("live_class", "title", "description", "chat_room_id")
+        ("Session Details", {
+            "fields": (("live_class", "title"), "description", "chat_room_id")
         }),
-        ("Timing (UTC)", {
-            "fields": ("start_datetime", "end_datetime", "extension_minutes")
+        ("Timing", {
+            "fields": (("start_datetime", "end_datetime"), "extension_minutes")
         }),
-        ("State & Controls", {
-            "fields": ("is_cancelled", "is_mic_locked", "is_camera_locked")
+        ("Controls", {
+            "fields": (("is_cancelled", "is_mic_locked", "is_camera_locked"),)
+        }),
+        ("Participants", {
+            "fields": ("attendees",),
+            "classes": ("collapse",)
         }),
     )
 
-    readonly_fields = ("chat_room_id", "live_class")
-
-    # --- Custom Actions ---
-
-    @admin.action(description="Cancel selected lessons")
-    def cancel_lessons(self, request, queryset):
-        updated = queryset.update(is_cancelled=True)
-        self.message_user(request, f"{updated} lessons marked as cancelled.")
-
-    @admin.action(description="Re-activate selected lessons")
-    def activate_lessons(self, request, queryset):
-        updated = queryset.update(is_cancelled=False)
-        self.message_user(request, f"{updated} lessons restored.")
-
-    @admin.action(description="Unlock Mic and Camera")
-    def unlock_all_controls(self, request, queryset):
-        queryset.update(is_mic_locked=False, is_camera_locked=False)
-        self.message_user(request, "Permissions reset for selected lessons.")
-
-    # --- Column Methods ---
-
-    def status_display(self, obj):
-        return obj.status.upper()
-
-    status_display.short_description = "Current State"
-
-    def duration_display(self, obj):
-        duration = obj.end_datetime - obj.start_datetime
-        minutes = int(duration.total_seconds() / 60)
-        return f"{minutes} min"
-
-    duration_display.short_description = "Duration"
+    def status_badge(self, obj):
+        color_map = {"live": "#27ae60", "upcoming": "#2980b9", "completed": "#7f8c8d", "cancelled": "#c0392b"}
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color_map.get(obj.status, "#000"), obj.status.upper()
+        )
+    status_badge.short_description = "Status"
 
     def lock_status(self, obj):
-        icons = []
-        if obj.is_mic_locked:
-            icons.append("🎤🔒")
-        if obj.is_camera_locked:
-            icons.append("📷🔒")
-        return " ".join(icons) if icons else "Open"
-
+        locks = []
+        if obj.is_mic_locked: locks.append("🎤🔒")
+        if obj.is_camera_locked: locks.append("📷🔒")
+        return " ".join(locks) if locks else "Open"
     lock_status.short_description = "Locks"
+
+    @admin.action(description="Cancel selected sessions")
+    def cancel_selected(self, request, queryset):
+        queryset.update(is_cancelled=True)
+        self.message_user(request, "Selected sessions cancelled.")
+
+    @admin.action(description="Restore selected sessions")
+    def activate_selected(self, request, queryset):
+        queryset.update(is_cancelled=False)
+        self.message_user(request, "Selected sessions restored.")
+
+    @admin.action(description="Unlock all controls")
+    def reset_locks(self, request, queryset):
+        queryset.update(is_mic_locked=False, is_camera_locked=False)
+        self.message_user(request, "Locks removed.")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('live_class')

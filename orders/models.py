@@ -6,6 +6,10 @@ from books.models import Book
 from courses.models import Course
 from events.models import Event
 from organizations.models import Organization
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
+from django.conf import settings
 
 
 class Order(models.Model):
@@ -54,13 +58,39 @@ class Order(models.Model):
             self.order_number = str(uuid.uuid4()).split("-")[0].upper()
         super().save(*args, **kwargs)
 
+    def send_confirmation_email(self):
+        subject = f"Payment Confirmed - Order #{self.order_number}"
+
+        context = {
+            "user": self.user,
+            "order": self,
+            "dashboard_url": "https://e-vuka.com/dashboard",
+            "items": self.items.all(),
+        }
+
+        html_message = render_to_string(
+            "emails/order_confirmed.html",
+            context
+        )
+        plain_message = strip_tags(html_message)
+
+        send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[self.user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+
     @property
     def amount_paid(self):
         """Sum only successful Paystack (or other) payments."""
         return sum(p.amount for p in self.payments.filter(status="successful"))
 
     def update_payment_status(self):
-        """Update order and payment status based on total successful payments."""
+        was_paid = self.status == "paid"
+
         paid = self.amount_paid
 
         if paid == 0:
@@ -74,6 +104,9 @@ class Order(models.Model):
             self.status = "paid"
 
         self.save(update_fields=["payment_status", "status"])
+
+        if not was_paid and self.status == "paid":
+            self.send_confirmation_email()
 
 
 class OrderItem(models.Model):

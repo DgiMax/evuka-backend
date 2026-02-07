@@ -6,6 +6,10 @@ from django.conf.urls.static import static
 from DVuka_Backend.views import UnifiedSearchView, CartValidationView
 from events.views import BestUpcomingEventView
 
+admin.site.site_header = "Evuka Management"
+admin.site.site_title = "Evuka Management Portal"
+admin.site.index_title = "Welcome to the Evuka Administration"
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("users/", include("users.urls")),
